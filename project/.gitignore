@@ -1,0 +1,57 @@
+# Claude
+.claude
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual env
+venv/
+.venv/
+
+# Environment
+.env
+!.env.example
+
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+*.logs
+logs/*.zip
+
+# Recordings / clips / segments (large binary files)
+clips/
+segments/
+*.mp4
+*.mkv
+*.avi
+
+# Graphify
+.graphify/
+graphify-out/
+
+# pencil
+.pencil/
+
+# Agents
+.agents/
+.claude
+.vscode/
+# IDEs
+.idea/
+.vscode/
+# OS files
+.DS_Store
+Thumbs.db
+
+#test
+test/
+
+#segments
+.segments/

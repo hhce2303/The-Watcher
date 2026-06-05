@@ -1,0 +1,9 @@
+module Watcher.Components
+
+WToggle        1.0 WToggle.qml
+WStepper       1.0 WStepper.qml
+WDropdown      1.0 WDropdown.qml
+WSeg           1.0 WSeg.qml
+WPathInput     1.0 WPathInput.qml
+WHotkey        1.0 WHotkey.qml
+WSettingsRow   1.0 WSettingsRow.qml

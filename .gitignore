@@ -1,0 +1,48 @@
+# Claude Code
+.claude/
+
+# Graphify (generated knowledge graph)
+graphify-out/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual env
+venv/
+.venv/
+
+# Environment
+.env
+!.env.example
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+*.logs
+
+# Pencil design tool
+.pencil/
+
+# Agents
+.agents/
+
+# IDEs
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test cache
+.pytest_cache/
+
+# Segments
+.segments/

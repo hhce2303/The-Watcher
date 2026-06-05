@@ -1,0 +1,11 @@
+module Watcher
+
+singleton Tokens 1.0 Tokens.qml
+
+BufferTimeline    1.0 BufferTimeline.qml
+PreRollOverlay    1.0 PreRollOverlay.qml
+AnnotationModal   1.0 AnnotationModal.qml
+MiniMode          1.0 MiniMode.qml
+Statusbar         1.0 Statusbar.qml
+HealthBadge       1.0 HealthBadge.qml
+SettingsView      1.0 SettingsView.qml

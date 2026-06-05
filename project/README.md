@@ -567,3 +567,180 @@ Priority order:
 ---
 
 End of development roadmap.
+
+---
+
+# Minimal UI Specification (MVP)
+
+The UI is required but intentionally minimal. It acts strictly as an adapter and must contain **no business logic**.
+
+## UI Responsibilities
+
+The UI must only:
+
+* Trigger manual events
+* Display recorder status
+* Display system logs
+* Provide system tray controls
+
+The recording engine must continue running if the UI crashes or is closed.
+
+---
+
+## Technology Choice
+
+Framework: **PySide6**
+
+Rationale:
+
+* Professional desktop UI
+* Stable Windows deployment
+* Compatible with PyInstaller
+* No licensing risks
+
+---
+
+## UI Features
+
+### 1. Recording Status Indicator
+
+Must clearly show:
+
+* Recording active / inactive
+* Buffer duration active
+
+Purpose:
+
+* Operator confidence
+* Antivirus / corporate compliance (visible recording indicator)
+
+---
+
+### 2. Mark Event Button
+
+Primary operator action.
+
+Behavior:
+
+* Single click
+* No confirmation dialogs
+* Immediate response
+
+Action flow:
+
+```
+UI → EventService.trigger_manual_event()
+```
+
+---
+
+### 3. System Log Panel
+
+Scrollable log output displaying:
+
+* Recorder lifecycle
+* Segment creation
+* Event triggers
+* Clip scheduling
+* Clip creation results
+
+Purpose:
+
+* Transparency
+* Troubleshooting
+
+---
+
+### 4. System Tray Icon
+
+Required for long‑running background usage.
+
+Tray menu:
+
+```
+Open Dashboard
+Exit
+```
+
+Recording must remain active while minimized.
+
+---
+
+## Application Startup Order
+
+The recorder must start before the UI.
+
+Startup sequence:
+
+```
+Application start
+ → Start RecorderService
+ → Start Scheduler
+ → Launch UI
+```
+
+This ensures recording begins immediately and continues independently of UI state.
+
+---
+
+## UI Architecture Rule
+
+UI is an **Adapter layer** in the hexagonal architecture.
+
+UI communicates only with:
+
+* EventService
+* RecorderService (read‑only status)
+* ClipService (notifications)
+
+The UI must never interact directly with:
+
+* FFmpeg
+* Filesystem
+* Scheduler
+
+---
+
+# Milestone Status
+
+| Milestone | Description | Status |
+|---|---|---|
+| M0 | Project bootstrap (venv, structure, CI) | Done |
+| M1 | FFmpeg gdigrab recorder adapter | Done |
+| M2 | Segment index + buffer manager | Done |
+| M3 | Clip builder (trim + concat) | Done |
+| M4 | Event service + cooldown logic | Done |
+| M5 | PySide6 operator UI | Done |
+| Monitor | Multi-monitor selection (screeninfo) | Done |
+| M6 | Reliability & hardening (supervisor, disk monitor, crash recovery) | Done |
+| M7 | Performance optimization (hardware encoder selector) | Done |
+| M8 | Packaging & deployment | **Done** |
+
+## M8 Build Instructions
+
+Requirements: Python 3.13, FFmpeg installed via winget (Gyan.FFmpeg), project venv set up.
+
+```powershell
+# From project/ directory:
+.\installer\build.ps1
+```
+
+**Output:**
+- `dist\The Watcher\The Watcher.exe` — standalone executable
+- `dist\The Watcher-<version>.zip` — distributable package (version comes from `app/__init__.py`)
+
+**Install on target machine:**
+```powershell
+# Extract "The Watcher-<version>.zip", then either double-click Setup.bat or:
+.\install.ps1
+```
+
+The installer copies the app to `%LOCALAPPDATA%\The Watcher` and optionally enables auto-start at login. No desktop shortcut is created.
+
+**Build notes:**
+- `build.ps1` creates a clean venv at `C:\TW_Venv` and a junction at `C:\TW_Build` to work around a PyInstaller/PySide6 bug where `QLibraryInfo.path()` mis-parses plugin paths when the venv path contains a comma.
+- The clean venv is reused on subsequent builds; only delete `C:\TW_Venv` to force a full reinstall.
+
+---
+
+End of README.
