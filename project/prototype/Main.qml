@@ -12,7 +12,7 @@ Window {
     flags: Qt.Window
 
     // ── App state ─────────────────────────────────────────────────────────────
-    property int    activeTab:        0   // 0=Grabación 1=Clips 2=Mini-modo 3=Ajustes
+    property int    activeTab:        0   // 0=Grabación 1=Clips 2=IT 3=Mini-modo 4=Ajustes
     property bool   isRecording:      true
     property string recDuration:      "00:42:52"
     property int    recordSecBacking: 2572
@@ -36,7 +36,8 @@ Window {
     Shortcut { sequence: "Ctrl+2"; onActivated: root.activeTab = 1 }
     Shortcut { sequence: "Ctrl+3"; onActivated: root.activeTab = 2 }
     Shortcut { sequence: "Ctrl+4"; onActivated: root.activeTab = 3 }
-    Shortcut { sequence: "Space";  onActivated: if (root.activeTab === 0) preRoll.start() }
+    Shortcut { sequence: "Ctrl+5"; onActivated: root.activeTab = 4 }
+    Shortcut { sequence: "Space";  enabled: root.activeTab === 0; onActivated: preRoll.start() }
 
     // ── Mini-mode window ──────────────────────────────────────────────────────
     W.MiniMode {
@@ -127,8 +128,9 @@ Window {
                             model: [
                                 { label: "Grabación",  key: "⌘1", idx: 0 },
                                 { label: "Clips",      key: "⌘2", idx: 1 },
-                                { label: "Mini-modo",  key: "⌘3", idx: 2 },
-                                { label: "Ajustes",    key: "⌘4", idx: 3 },
+                                { label: "IT",         key: "⌘3", idx: 2 },
+                                { label: "Mini-modo",  key: "⌘4", idx: 3 },
+                                { label: "Ajustes",    key: "⌘5", idx: 4 },
                             ]
                             delegate: Rectangle {
                                 property bool sel: root.activeTab === modelData.idx
@@ -961,10 +963,19 @@ Window {
                     }
                 } // Tab 1
 
-                // ── Tab 2 — Mini-modo ─────────────────────────────────────────
+                // ── Tab 2 — IT Editor ─────────────────────────────────────────
                 Item {
                     anchors.fill: parent
                     opacity: root.activeTab === 2 ? 1 : 0
+                    visible: opacity > 0
+                    Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                    W.ITEditorView { anchors.fill: parent }
+                } // Tab 2
+
+                // ── Tab 3 — Mini-modo ─────────────────────────────────────────
+                Item {
+                    anchors.fill: parent
+                    opacity: root.activeTab === 3 ? 1 : 0
                     visible: opacity > 0
                     Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
                     Rectangle {
@@ -975,7 +986,7 @@ Window {
                             Text { anchors.horizontalCenter: parent.horizontalCenter; text: "Mini-modo"; color: W.Tokens.textMuted; font.family: W.Tokens.sans; font.pixelSize: 13 }
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Ctrl+3 activa la ventana flotante"
+                                text: "Ctrl+4 activa la ventana flotante"
                                 color: W.Tokens.textDim; font.family: W.Tokens.mono; font.pixelSize: 11
                             }
                             Rectangle {
@@ -993,16 +1004,16 @@ Window {
                             }
                         }
                     }
-                } // Tab 2
+                } // Tab 3
 
-                // ── Tab 3 — Ajustes ───────────────────────────────────────────
+                // ── Tab 4 — Ajustes ───────────────────────────────────────────
                 Item {
                     anchors.fill: parent
-                    opacity: root.activeTab === 3 ? 1 : 0
+                    opacity: root.activeTab === 4 ? 1 : 0
                     visible: opacity > 0
                     Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
                     W.SettingsView { anchors.fill: parent }
-                } // Tab 3
+                } // Tab 4
 
             } // Tab content
 

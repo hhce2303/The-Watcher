@@ -84,7 +84,7 @@ Item {
                     text: "AJUSTES"
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.mono
-                    font.pixelSize: 9
+                    font.pixelSize: 11
                     font.weight: Font.DemiBold
                     font.letterSpacing: 1.6
                 }
@@ -138,7 +138,7 @@ Item {
                             text: modelData.label
                             color: active ? W.Tokens.textPrimary : W.Tokens.textMuted
                             font.family: W.Tokens.sans
-                            font.pixelSize: 12
+                            font.pixelSize: 14
                             font.weight: Font.Medium
                             Behavior on color { ColorAnimation { duration: 120 } }
                         }
@@ -162,7 +162,7 @@ Item {
                             text: "VERSIÓN"
                             color: W.Tokens.textDim
                             font.family: W.Tokens.mono
-                            font.pixelSize: 9
+                            font.pixelSize: 11
                             font.letterSpacing: 1.0
                         }
                         Item { Layout.fillWidth: true }
@@ -170,7 +170,7 @@ Item {
                             text: "0.8.2"
                             color: W.Tokens.textPrimary
                             font.family: W.Tokens.mono
-                            font.pixelSize: 9
+                            font.pixelSize: 11
                         }
                     }
                     RowLayout {
@@ -178,7 +178,7 @@ Item {
                             text: "BUILD"
                             color: W.Tokens.textDim
                             font.family: W.Tokens.mono
-                            font.pixelSize: 9
+                            font.pixelSize: 11
                             font.letterSpacing: 1.0
                         }
                         Item { Layout.fillWidth: true }
@@ -186,7 +186,7 @@ Item {
                             text: "2026.05.24"
                             color: W.Tokens.textPrimary
                             font.family: W.Tokens.mono
-                            font.pixelSize: 9
+                            font.pixelSize: 11
                         }
                     }
                 }
@@ -240,7 +240,7 @@ Item {
                 text: parent.parent.title
                 color: W.Tokens.textPrimary
                 font.family: W.Tokens.sans
-                font.pixelSize: 20
+                font.pixelSize: 22
                 font.weight: Font.DemiBold
             }
             Rectangle {
@@ -261,7 +261,7 @@ Item {
                     text: parent.parent.parent.badge
                     color: W.Tokens.accentYellow
                     font.family: W.Tokens.mono
-                    font.pixelSize: 9
+                    font.pixelSize: 11
                     font.weight: Font.DemiBold
                     font.letterSpacing: 1.2
                 }
@@ -274,7 +274,7 @@ Item {
             text: parent.subtitle
             color: W.Tokens.textMuted
             font.family: W.Tokens.sans
-            font.pixelSize: 13
+            font.pixelSize: 15
             wrapMode: Text.WordWrap
             Layout.fillWidth: true
         }
@@ -417,7 +417,7 @@ Item {
                             return W.Tokens.textMuted
                         }
                         font.family: W.Tokens.sans
-                        font.pixelSize: 12
+                        font.pixelSize: 14
                         wrapMode: Text.WordWrap
                     }
 
@@ -449,7 +449,7 @@ Item {
                                   ? "Aplicando…" : "Aplicar ahora"
                             color: W.Tokens.bgBase
                             font.family: W.Tokens.sans
-                            font.pixelSize: 12
+                            font.pixelSize: 14
                             font.weight: Font.DemiBold
                         }
                     }
@@ -586,7 +586,7 @@ Item {
                                 text: "USO DE DISCO"
                                 color: W.Tokens.textMuted
                                 font.family: W.Tokens.mono
-                                font.pixelSize: 9
+                                font.pixelSize: 11
                                 font.letterSpacing: 1.4
                             }
                             RowLayout {
@@ -595,14 +595,14 @@ Item {
                                     text: root.settings.diskUsed.toFixed(1)
                                     color: W.Tokens.textPrimary
                                     font.family: W.Tokens.sans
-                                    font.pixelSize: 22
+                                    font.pixelSize: 24
                                     font.weight: Font.DemiBold
                                 }
                                 Text {
                                     text: "/ " + root.settings.diskMax + " GB"
                                     color: W.Tokens.textMuted
                                     font.family: W.Tokens.sans
-                                    font.pixelSize: 14
+                                    font.pixelSize: 16
                                 }
                             }
                         }
@@ -611,7 +611,7 @@ Item {
                             text: Math.round((root.settings.diskUsed / root.settings.diskMax) * 100) + "%"
                             color: W.Tokens.accentPrimary
                             font.family: W.Tokens.mono
-                            font.pixelSize: 20
+                            font.pixelSize: 22
                             font.weight: Font.Bold
                         }
                     }
@@ -724,7 +724,7 @@ Item {
                             text: "ROL DE ESTE EQUIPO"
                             color: W.Tokens.textMuted
                             font.family: W.Tokens.mono
-                            font.pixelSize: 9
+                            font.pixelSize: 11
                             font.letterSpacing: 1.4
                         }
                         Rectangle {
@@ -744,7 +744,7 @@ Item {
                                 }
                                 color: W.Tokens.accentPrimary
                                 font.family: W.Tokens.mono
-                                font.pixelSize: 9
+                                font.pixelSize: 11
                                 font.weight: Font.DemiBold
                                 font.letterSpacing: 0.8
                             }
@@ -756,7 +756,7 @@ Item {
                         text: "Cambia el rol de este equipo. El cambio aplica al reiniciar The Watcher."
                         color: W.Tokens.textMuted
                         font.family: W.Tokens.sans
-                        font.pixelSize: 12
+                        font.pixelSize: 14
                         wrapMode: Text.WordWrap
                     }
 
@@ -780,7 +780,7 @@ Item {
                         text: "Reinicia The Watcher para aplicar el nuevo rol."
                         color: "#FBBF24"
                         font.family: W.Tokens.sans
-                        font.pixelSize: 11
+                        font.pixelSize: 13
                     }
                 }
             }
@@ -795,11 +795,128 @@ Item {
 
             SectionHead {
                 title: "Red"
-                subtitle: "Configura los equipos IT a los que este Supervisor envía solicitudes de clips vía WebSocket."
+                subtitle: "Configuración de red para el sistema de solicitudes WebSocket."
             }
 
-            // IT host list
+            // ── IT role: puerto del servidor WS ──────────────────────
             ColumnLayout {
+                visible: SettingsBridge.role === "it"
+                Layout.fillWidth: true
+                Layout.topMargin: 12
+                spacing: 10
+
+                Component.onCompleted: {
+                    if (SettingsBridge.role === "it")
+                        SettingsBridge.checkItWsPortStatus()
+                }
+
+                Text {
+                    text: "SERVIDOR WS · PUERTO " + SettingsBridge.itWsPort
+                    color: W.Tokens.textMuted
+                    font.family: W.Tokens.mono
+                    font.pixelSize: 11
+                    font.letterSpacing: 1.4
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    // Status pill
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 36
+                        radius: W.Tokens.rSm
+                        color: W.Tokens.bgBase
+                        border.color: W.Tokens.borderBase
+                        border.width: 1
+
+                        RowLayout {
+                            anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
+                            spacing: 8
+
+                            Rectangle {
+                                width: 8; height: 8; radius: 4
+                                color: {
+                                    var s = SettingsBridge.itWsPortStatus
+                                    if (s === "open")    return "#4ADE80"
+                                    if (s === "closed")  return W.Tokens.accentRecord
+                                    if (s === "opening") return "#FBBF24"
+                                    if (s === "error")   return W.Tokens.accentRecord
+                                    return W.Tokens.textDim
+                                }
+                                SequentialAnimation on opacity {
+                                    running: SettingsBridge.itWsPortStatus === "opening"
+                                    loops: Animation.Infinite
+                                    NumberAnimation { to: 0.3; duration: 600 }
+                                    NumberAnimation { to: 1.0; duration: 600 }
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: {
+                                    var s = SettingsBridge.itWsPortStatus
+                                    if (s === "open")    return "Puerto abierto — listo para recibir solicitudes"
+                                    if (s === "closed")  return "Puerto cerrado — los Supervisores no pueden conectar"
+                                    if (s === "opening") return "Abriendo puerto..."
+                                    if (s === "error")   return "Error al abrir — ejecuta la app como Administrador"
+                                    return "Verificando estado del firewall..."
+                                }
+                                color: W.Tokens.textPrimary
+                                font.family: W.Tokens.sans
+                                font.pixelSize: 13
+                            }
+
+                            // Refresh button
+                            Rectangle {
+                                width: 26; height: 26; radius: W.Tokens.rXs
+                                color: rfhvr.hovered ? Qt.rgba(1,1,1,0.06) : "transparent"
+                                HoverHandler { id: rfhvr }
+                                TapHandler { onTapped: SettingsBridge.checkItWsPortStatus() }
+                                Text { anchors.centerIn: parent; text: "↺"
+                                       color: W.Tokens.textMuted; font.pixelSize: 15 }
+                            }
+                        }
+                    }
+
+                    // Abrir puerto button (hidden when already open)
+                    Rectangle {
+                        visible: SettingsBridge.itWsPortStatus !== "open"
+                        width: 130; height: 36; radius: W.Tokens.rSm
+                        color: openHvr.hovered
+                               ? Qt.rgba(0.18, 0.73, 0.45, 0.85)
+                               : "#22C55E"
+                        Behavior on color { ColorAnimation { duration: 100 } }
+                        HoverHandler { id: openHvr }
+                        TapHandler {
+                            enabled: SettingsBridge.itWsPortStatus !== "opening"
+                            onTapped: SettingsBridge.openItWsPort()
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            text: SettingsBridge.itWsPortStatus === "opening"
+                                  ? "Abriendo..." : "Abrir puerto"
+                            color: "white"
+                            font.family: W.Tokens.sans
+                            font.pixelSize: 13; font.weight: Font.DemiBold
+                        }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: "Requiere Administrador. Agrega una regla TCP entrante en Windows Firewall para que los Supervisores puedan conectar."
+                    color: W.Tokens.textDim
+                    font.family: W.Tokens.mono
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            // ── Supervisor role: lista de equipos IT ──────────────────
+            ColumnLayout {
+                visible: SettingsBridge.role === "supervisor" || SettingsBridge.role === ""
                 Layout.fillWidth: true
                 Layout.topMargin: 12
                 spacing: 10
@@ -808,7 +925,7 @@ Item {
                     text: "EQUIPOS IT (HOSTNAME / IP)"
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.mono
-                    font.pixelSize: 9
+                    font.pixelSize: 11
                     font.letterSpacing: 1.4
                 }
 
@@ -828,14 +945,14 @@ Item {
 
                             Text {
                                 text: "🖥️"
-                                font.pixelSize: 13
+                                font.pixelSize: 15
                             }
                             Text {
                                 Layout.fillWidth: true
                                 text: modelData
                                 color: W.Tokens.textPrimary
                                 font.family: W.Tokens.mono
-                                font.pixelSize: 12
+                                font.pixelSize: 14
                                 elide: Text.ElideRight
                             }
                             Rectangle {
@@ -847,7 +964,7 @@ Item {
                                     anchors.centerIn: parent
                                     text: "×"
                                     color: W.Tokens.textMuted
-                                    font.pixelSize: 14
+                                    font.pixelSize: 16
                                     font.weight: Font.DemiBold
                                 }
                             }
@@ -866,7 +983,7 @@ Item {
                         height: 34
                         placeholderText: "192.168.1.100  o  PC-IT-01"
                         font.family: W.Tokens.mono
-                        font.pixelSize: 12
+                        font.pixelSize: 14
                         color: W.Tokens.textPrimary
                         background: Rectangle {
                             color: W.Tokens.bgBase
@@ -893,17 +1010,17 @@ Item {
                             anchors.centerIn: parent
                             text: "+ Agregar"
                             color: W.Tokens.bgBase
-                            font.family: W.Tokens.sans; font.pixelSize: 12; font.weight: Font.DemiBold
+                            font.family: W.Tokens.sans; font.pixelSize: 14; font.weight: Font.DemiBold
                         }
                     }
                 }
 
                 Text {
                     Layout.fillWidth: true
-                    text: "Puerto: " + (SettingsBridge.itWsHosts.length > 0 ? "9090 (configurable via IT_WS_PORT en .env)" : "—")
+                    text: "Puerto: " + SettingsBridge.itWsPort + " (configurable via IT_WS_PORT en .env)"
                     color: W.Tokens.textDim
                     font.family: W.Tokens.mono
-                    font.pixelSize: 10
+                    font.pixelSize: 12
                 }
             }
 
@@ -915,7 +1032,7 @@ Item {
                     text: "\\\\SIG-SLC-Storage"
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.mono
-                    font.pixelSize: 12
+                    font.pixelSize: 14
                 }
             }
         }

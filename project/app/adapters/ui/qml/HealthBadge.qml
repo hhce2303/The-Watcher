@@ -23,7 +23,7 @@ Item {
             text: root.label
             color: W.Tokens.textMuted
             font.family: W.Tokens.mono
-            font.pixelSize: 9
+            font.pixelSize: 11
             font.weight: Font.DemiBold
             font.letterSpacing: 1.2
         }
@@ -31,7 +31,7 @@ Item {
             text: root.value
             color: root.valueColor
             font.family: W.Tokens.mono
-            font.pixelSize: 10
+            font.pixelSize: 12
             font.weight: Font.DemiBold
         }
     }

@@ -84,7 +84,13 @@ Window {
     Shortcut { sequence: "Ctrl+2"; onActivated: { if (root.tabVisible(1)) root.activeTab = 1 } }
     Shortcut { sequence: "Ctrl+3"; onActivated: { if (root.tabVisible(2)) root.activeTab = 2 } }
     Shortcut { sequence: "Ctrl+4"; onActivated: { if (root.tabVisible(3)) root.activeTab = 3 } }
-    Shortcut { sequence: "Space";  onActivated: if (root.activeTab === 0) preRoll.start() }
+    // Disabled for the IT role: the full-screen IT editor owns Space (play/pause)
+    // and registering both would make the shortcut ambiguous.
+    Shortcut {
+        sequence: "Space"
+        enabled: root.activeTab === 0 && SettingsBridge.role !== "it"
+        onActivated: preRoll.start()
+    }
 
     // IT inbox: toggle the slide-in request inbox panel
     Shortcut {
@@ -222,9 +228,12 @@ Window {
         anchors.fill: parent
         color: W.Tokens.bgBase
 
+        // The standard shell (hero bar + tabs + statusbar) is hidden for the IT
+        // role, which gets a dedicated full-screen editor below.
         ColumnLayout {
             anchors.fill: parent
             spacing: 0
+            visible: SettingsBridge.role !== "it"
 
             // ── Hero bar ──────────────────────────────────────────────────────
             Rectangle {
@@ -1320,6 +1329,18 @@ Window {
             }
 
         } // ColumnLayout
+
+        // ── IT role: full-screen editor ───────────────────────────────────────
+        // ITEditorView is self-contained (own titlebar + statusbar), so it
+        // replaces the standard shell instead of sitting inside a tab.
+        // Mock data for now; bind to backend per qml-it-editor/README.md later.
+        Loader {
+            id: itEditorLoader
+            anchors.fill: parent
+            active: SettingsBridge.role === "it"
+            visible: active
+            sourceComponent: W.ITEditorView { anchors.fill: parent }
+        }
 
         // ── First-run role wizard overlay ─────────────────────────────────────
         // Covers the entire window until the user selects a role.

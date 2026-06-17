@@ -106,7 +106,7 @@ Window {
                         text: "THE WATCHER · MINI"
                         color: W.Tokens.textPrimary
                         font.family: W.Tokens.mono
-                        font.pixelSize: 9
+                        font.pixelSize: 11
                         font.weight: Font.Bold
                         font.letterSpacing: 1.6
                         Layout.leftMargin: 6
@@ -128,7 +128,7 @@ Window {
                             anchors.centerIn: parent
                             text: "⤢"
                             color: W.Tokens.textMuted
-                            font.pixelSize: 12
+                            font.pixelSize: 14
                         }
                     }
 
@@ -147,7 +147,7 @@ Window {
                             anchors.centerIn: parent
                             text: "✕"
                             color: closeHvr.hovered ? "#FFFFFF" : W.Tokens.textMuted
-                            font.pixelSize: 10
+                            font.pixelSize: 12
                         }
                     }
                 }
@@ -178,7 +178,7 @@ Window {
                             text: "● LIVE · REC"
                             color: W.Tokens.accentRecord
                             font.family: W.Tokens.mono
-                            font.pixelSize: 9
+                            font.pixelSize: 11
                             font.weight: Font.DemiBold
                             font.letterSpacing: 0.6
                         }
@@ -190,7 +190,7 @@ Window {
                         text: root.fmtTime(root.recordSec)
                         color: W.Tokens.textPrimary
                         font.family: W.Tokens.mono
-                        font.pixelSize: 16
+                        font.pixelSize: 18
                         font.weight: Font.Bold
                         font.letterSpacing: 0.6
                     }
@@ -207,7 +207,7 @@ Window {
                             text: "BUFFER"
                             color: W.Tokens.textMuted
                             font.family: W.Tokens.mono
-                            font.pixelSize: 8
+                            font.pixelSize: 10
                             font.letterSpacing: 1.2
                         }
                         Item { Layout.fillWidth: true }
@@ -215,7 +215,7 @@ Window {
                             text: "2:00"
                             color: W.Tokens.textDim
                             font.family: W.Tokens.mono
-                            font.pixelSize: 8
+                            font.pixelSize: 10
                         }
                     }
 
@@ -277,7 +277,7 @@ Window {
                             text: "📍 MARCAR EVENTO"
                             color: W.Tokens.bgBase
                             font.family: W.Tokens.sans
-                            font.pixelSize: 11
+                            font.pixelSize: 13
                             font.weight: Font.Bold
                             font.letterSpacing: 1.0
                         }
@@ -297,7 +297,7 @@ Window {
                         text: "EVENTOS HOY"
                         color: W.Tokens.textMuted
                         font.family: W.Tokens.mono
-                        font.pixelSize: 9
+                        font.pixelSize: 11
                         font.letterSpacing: 1.2
                     }
                     Item { Layout.fillWidth: true }
@@ -305,7 +305,7 @@ Window {
                         text: root.eventCount
                         color: W.Tokens.textPrimary
                         font.family: W.Tokens.mono
-                        font.pixelSize: 12
+                        font.pixelSize: 14
                         font.weight: Font.DemiBold
                     }
                 }

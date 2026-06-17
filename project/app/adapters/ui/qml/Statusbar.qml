@@ -55,7 +55,7 @@ Rectangle {
                 text: "GRABANDO"
                 color: W.Tokens.accentRecord
                 font.family: W.Tokens.mono
-                font.pixelSize: 10
+                font.pixelSize: 12
                 font.weight: Font.DemiBold
                 font.letterSpacing: 1.0
             }
@@ -63,7 +63,7 @@ Rectangle {
                 text: root.fmtTime(root.recordSec)
                 color: W.Tokens.textPrimary
                 font.family: W.Tokens.mono
-                font.pixelSize: 10
+                font.pixelSize: 12
             }
         }
 
@@ -77,7 +77,7 @@ Rectangle {
             text: root.eventCount + " eventos"
             color: W.Tokens.textMuted
             font.family: W.Tokens.mono
-            font.pixelSize: 10
+            font.pixelSize: 12
         }
         Rectangle {
             Layout.preferredWidth: 1
@@ -89,7 +89,7 @@ Rectangle {
             text: "buffer 2:00 / 60 seg"
             color: W.Tokens.textMuted
             font.family: W.Tokens.mono
-            font.pixelSize: 10
+            font.pixelSize: 12
         }
         Rectangle {
             Layout.preferredWidth: 1
@@ -101,7 +101,7 @@ Rectangle {
             text: root.storagePath
             color: W.Tokens.textMuted
             font.family: W.Tokens.mono
-            font.pixelSize: 10
+            font.pixelSize: 12
         }
 
         Item { Layout.fillWidth: true }
@@ -118,7 +118,7 @@ Rectangle {
                 text: "SISTEMA OK"
                 color: W.Tokens.accentOk
                 font.family: W.Tokens.mono
-                font.pixelSize: 10
+                font.pixelSize: 12
                 font.letterSpacing: 0.8
             }
         }
@@ -133,7 +133,7 @@ Rectangle {
             text: "build 2026.05.24"
             color: W.Tokens.textDim
             font.family: W.Tokens.mono
-            font.pixelSize: 10
+            font.pixelSize: 12
         }
     }
 }

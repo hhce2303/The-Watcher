@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 class ClipRequest:
     """A Supervisor's request for a clip to be extracted and exported by IT.
 
-    Lifecycle:  pending → processing → done
+    Lifecycle:  pending → processing → done | declined
     Transport:  JSON via WebSocket (Supervisor → IT)
     Persistence: one JSON file per request in %LOCALAPPDATA%\\The Watcher\\requests\\
     """
@@ -21,7 +21,7 @@ class ClipRequest:
     start_time: str          # local datetime string "YYYY-MM-DD HH:MM"
     end_time: str            # local datetime string "YYYY-MM-DD HH:MM"
     description: str         # free-text incident description
-    status: str = "pending"  # pending | processing | done
+    status: str = "pending"  # pending | processing | done | declined
 
     def to_dict(self) -> dict:
         return asdict(self)

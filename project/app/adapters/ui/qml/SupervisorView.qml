@@ -106,17 +106,48 @@ Item {
         }
     }
 
+    // ── Date helper functions ──────────────────────────────────────────
+    function formatDate(date) {
+        var yyyy = date.getFullYear()
+        var mm = String(date.getMonth() + 1).padStart(2, '0')
+        var dd = String(date.getDate()).padStart(2, '0')
+        var hh = String(date.getHours()).padStart(2, '0')
+        var min = String(date.getMinutes()).padStart(2, '0')
+        return yyyy + "-" + mm + "-" + dd + " " + hh + ":" + min
+    }
+
+    function setStartToNow() {
+        var d = new Date()
+        root.formStart = formatDate(d)
+        // Si no hay fin, colocar +30 min por defecto
+        if (root.formEnd === "") {
+            var end = new Date(d.getTime() + 30*60000)
+            root.formEnd = formatDate(end)
+        }
+    }
+
+    function addMinutesToEnd(mins) {
+        if (!root.formStart) return
+        var parts = root.formStart.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/)
+        if (!parts) return
+        var d = new Date(parts[1], parts[2]-1, parts[3], parts[4], parts[5])
+        var end = new Date(d.getTime() + mins*60000)
+        root.formEnd = formatDate(end)
+    }
+
     // ── Status badge helper ───────────────────────────────────────────
     function statusColor(s) {
         if (s === "pending")    return "#FBBF24"
         if (s === "processing") return W.Tokens.accentPrimary
         if (s === "done")       return "#4ADE80"
+        if (s === "declined")   return W.Tokens.accentRecord
         return W.Tokens.textMuted
     }
     function statusLabel(s) {
         if (s === "pending")    return "PENDIENTE"
         if (s === "processing") return "PROCESANDO"
         if (s === "done")       return "LISTO"
+        if (s === "declined")   return "DECLINADA"
         return s.toUpperCase()
     }
 
@@ -152,7 +183,7 @@ Item {
                             text: "OPERADORES"
                             color: W.Tokens.textMuted
                             font.family: W.Tokens.mono
-                            font.pixelSize: 9
+                            font.pixelSize: 11
                             font.letterSpacing: 1.4
                         }
                         Rectangle {
@@ -164,7 +195,7 @@ Item {
                                 anchors.centerIn: parent
                                 text: root.operators.length
                                 color: W.Tokens.accentPrimary
-                                font.family: W.Tokens.mono; font.pixelSize: 9; font.weight: Font.Bold
+                                font.family: W.Tokens.mono; font.pixelSize: 11; font.weight: Font.Bold
                             }
                         }
                         Item { Layout.fillWidth: true }
@@ -173,7 +204,7 @@ Item {
                             color: refreshHvr.hovered ? Qt.rgba(1,1,1,0.06) : "transparent"
                             HoverHandler { id: refreshHvr }
                             TapHandler { onTapped: root.loadOperators() }
-                            Text { anchors.centerIn: parent; text: "↺"; color: W.Tokens.textMuted; font.pixelSize: 13 }
+                            Text { anchors.centerIn: parent; text: "↺"; color: W.Tokens.textMuted; font.pixelSize: 15 }
                         }
                     }
                 }
@@ -188,7 +219,7 @@ Item {
                         id: searchField
                         anchors { fill: parent; margins: 8 }
                         placeholderText: "Buscar operador…"
-                        font.family: W.Tokens.sans; font.pixelSize: 12
+                        font.family: W.Tokens.sans; font.pixelSize: 14
                         color: W.Tokens.textPrimary
                         background: Rectangle {
                             color: W.Tokens.bgBase
@@ -273,7 +304,7 @@ Item {
                                         text: parent.parent.parent.parent.opId
                                         color: sel ? W.Tokens.accentPrimary : W.Tokens.accentMonitor
                                         font.family: W.Tokens.mono
-                                        font.pixelSize: 13
+                                        font.pixelSize: 15
                                         font.weight: Font.Bold
                                         Behavior on color { ColorAnimation { duration: W.Tokens.durFast } }
                                     }
@@ -286,7 +317,7 @@ Item {
                                     text: modelData.name
                                     color: sel ? W.Tokens.textPrimary : W.Tokens.textMuted
                                     font.family: W.Tokens.sans
-                                    font.pixelSize: 10
+                                    font.pixelSize: 12
                                     font.weight: sel ? Font.DemiBold : Font.Normal
                                     elide: Text.ElideRight
                                     Behavior on color { ColorAnimation { duration: W.Tokens.durFast } }
@@ -305,7 +336,7 @@ Item {
                                         text: modelData.storage
                                         color: W.Tokens.textDim
                                         font.family: W.Tokens.mono
-                                        font.pixelSize: 8
+                                        font.pixelSize: 10
                                         font.weight: Font.DemiBold
                                         font.letterSpacing: 0.3
                                     }
@@ -322,7 +353,7 @@ Item {
                                     anchors.centerIn: parent
                                     text: "✓"
                                     color: W.Tokens.bgBase
-                                    font.pixelSize: 9; font.weight: Font.Bold
+                                    font.pixelSize: 11; font.weight: Font.Bold
                                 }
                             }
                         }
@@ -365,14 +396,14 @@ Item {
                                 text: "Solicitar clip"
                                 color: W.Tokens.textPrimary
                                 font.family: W.Tokens.sans
-                                font.pixelSize: 20
+                                font.pixelSize: 22
                                 font.weight: Font.DemiBold
                             }
                             Text {
                                 text: "Selecciona un operador en el panel izquierdo y define el rango de tiempo del incidente."
                                 color: W.Tokens.textMuted
                                 font.family: W.Tokens.sans
-                                font.pixelSize: 13
+                                font.pixelSize: 15
                                 wrapMode: Text.WordWrap
                                 Layout.fillWidth: true
                             }
@@ -391,7 +422,7 @@ Item {
                                 onTextChanged: root.formOperator = text
                                 color: W.Tokens.textPrimary
                                 font.family: W.Tokens.mono
-                                font.pixelSize: 12
+                                font.pixelSize: 14
                                 background: Rectangle {
                                     color: W.Tokens.bgBase
                                     border.color: parent.activeFocus ? W.Tokens.accentPrimary : W.Tokens.borderBase
@@ -404,19 +435,36 @@ Item {
                         C.WSettingsRow {
                             label: "Inicio del incidente"
                             helper: "Fecha y hora local, formato: YYYY-MM-DD HH:MM"
-                            TextField {
-                                width: 200
-                                height: 32
-                                text: root.formStart
-                                placeholderText: "2026-06-04 14:00"
-                                onTextChanged: root.formStart = text
-                                color: W.Tokens.textPrimary
-                                font.family: W.Tokens.mono
-                                font.pixelSize: 12
-                                background: Rectangle {
-                                    color: W.Tokens.bgBase
-                                    border.color: parent.activeFocus ? W.Tokens.accentPrimary : W.Tokens.borderBase
-                                    border.width: 1; radius: W.Tokens.rSm
+                            RowLayout {
+                                spacing: 8
+                                TextField {
+                                    width: 200
+                                    height: 32
+                                    text: root.formStart
+                                    placeholderText: "2026-06-04 14:00"
+                                    onTextChanged: root.formStart = text
+                                    color: W.Tokens.textPrimary
+                                    font.family: W.Tokens.mono
+                                    font.pixelSize: 16
+                                    background: Rectangle {
+                                        color: W.Tokens.bgBase
+                                        border.color: parent.activeFocus ? W.Tokens.accentPrimary : W.Tokens.borderBase
+                                        border.width: 1; radius: W.Tokens.rSm
+                                    }
+                                }
+                                Rectangle {
+                                    width: 65; height: 32; radius: W.Tokens.rSm
+                                    color: btnNowHvr.hovered ? Qt.rgba(1,1,1,0.1) : W.Tokens.bgSurface
+                                    border.color: W.Tokens.borderBase; border.width: 1
+                                    HoverHandler { id: btnNowHvr }
+                                    TapHandler { onTapped: root.setStartToNow() }
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "Ahora"
+                                        color: W.Tokens.textPrimary
+                                        font.family: W.Tokens.sans
+                                        font.pixelSize: 14
+                                    }
                                 }
                             }
                         }
@@ -424,19 +472,46 @@ Item {
                         C.WSettingsRow {
                             label: "Fin del incidente"
                             helper: "Incluir margen post-incidente (ej. +30 min)"
-                            TextField {
-                                width: 200
-                                height: 32
-                                text: root.formEnd
-                                placeholderText: "2026-06-04 14:30"
-                                onTextChanged: root.formEnd = text
-                                color: W.Tokens.textPrimary
-                                font.family: W.Tokens.mono
-                                font.pixelSize: 12
-                                background: Rectangle {
-                                    color: W.Tokens.bgBase
-                                    border.color: parent.activeFocus ? W.Tokens.accentPrimary : W.Tokens.borderBase
-                                    border.width: 1; radius: W.Tokens.rSm
+                            RowLayout {
+                                spacing: 8
+                                TextField {
+                                    width: 200
+                                    height: 32
+                                    text: root.formEnd
+                                    placeholderText: "2026-06-04 14:30"
+                                    onTextChanged: root.formEnd = text
+                                    color: W.Tokens.textPrimary
+                                    font.family: W.Tokens.mono
+                                    font.pixelSize: 16
+                                    background: Rectangle {
+                                        color: W.Tokens.bgBase
+                                        border.color: parent.activeFocus ? W.Tokens.accentPrimary : W.Tokens.borderBase
+                                        border.width: 1; radius: W.Tokens.rSm
+                                    }
+                                }
+                                Rectangle {
+                                    width: 55; height: 32; radius: W.Tokens.rSm
+                                    color: btn15Hvr.hovered ? Qt.rgba(1,1,1,0.1) : W.Tokens.bgSurface
+                                    border.color: W.Tokens.borderBase; border.width: 1
+                                    HoverHandler { id: btn15Hvr }
+                                    TapHandler { onTapped: root.addMinutesToEnd(15) }
+                                    Text { anchors.centerIn: parent; text: "+15m"; color: W.Tokens.textPrimary; font.family: W.Tokens.sans; font.pixelSize: 14 }
+                                }
+                                Rectangle {
+                                    width: 55; height: 32; radius: W.Tokens.rSm
+                                    color: btn30Hvr.hovered ? Qt.rgba(1,1,1,0.1) : W.Tokens.bgSurface
+                                    border.color: W.Tokens.borderBase; border.width: 1
+                                    HoverHandler { id: btn30Hvr }
+                                    TapHandler { onTapped: root.addMinutesToEnd(30) }
+                                    Text { anchors.centerIn: parent; text: "+30m"; color: W.Tokens.textPrimary; font.family: W.Tokens.sans; font.pixelSize: 14 }
+                                }
+                                Rectangle {
+                                    width: 55; height: 32; radius: W.Tokens.rSm
+                                    color: btn60Hvr.hovered ? Qt.rgba(1,1,1,0.1) : W.Tokens.bgSurface
+                                    border.color: W.Tokens.borderBase; border.width: 1
+                                    HoverHandler { id: btn60Hvr }
+                                    TapHandler { onTapped: root.addMinutesToEnd(60) }
+                                    Text { anchors.centerIn: parent; text: "+1h"; color: W.Tokens.textPrimary; font.family: W.Tokens.sans; font.pixelSize: 14 }
                                 }
                             }
                         }
@@ -455,7 +530,7 @@ Item {
                                 wrapMode: TextArea.Wrap
                                 color: W.Tokens.textPrimary
                                 font.family: W.Tokens.sans
-                                font.pixelSize: 12
+                                font.pixelSize: 14
                                 background: Rectangle {
                                     color: W.Tokens.bgBase
                                     border.color: parent.activeFocus ? W.Tokens.accentPrimary : W.Tokens.borderBase
@@ -489,7 +564,7 @@ Item {
                                     text: root.sending ? "Enviando…" : "Enviar a IT"
                                     color: parent.canSend ? W.Tokens.bgBase : W.Tokens.textDim
                                     font.family: W.Tokens.sans
-                                    font.pixelSize: 13
+                                    font.pixelSize: 15
                                     font.weight: Font.DemiBold
                                 }
                             }
@@ -501,7 +576,7 @@ Item {
                                       : "✗ Error al enviar"
                                 color: root.sendFeedback === "ok" ? "#4ADE80" : "#F87171"
                                 font.family: W.Tokens.sans
-                                font.pixelSize: 12
+                                font.pixelSize: 14
                             }
                         }
                     }
@@ -517,7 +592,7 @@ Item {
                                 text: "MIS SOLICITUDES"
                                 color: W.Tokens.textMuted
                                 font.family: W.Tokens.mono
-                                font.pixelSize: 9
+                                font.pixelSize: 11
                                 font.letterSpacing: 1.4
                             }
                             Item { Layout.fillWidth: true }
@@ -531,7 +606,7 @@ Item {
                                     text: root.myRequests.length
                                     color: W.Tokens.accentPrimary
                                     font.family: W.Tokens.mono
-                                    font.pixelSize: 9
+                                    font.pixelSize: 11
                                     font.weight: Font.Bold
                                 }
                             }
@@ -565,7 +640,7 @@ Item {
                                                 text: root.statusLabel(modelData.status)
                                                 color: root.statusColor(modelData.status)
                                                 font.family: W.Tokens.mono
-                                                font.pixelSize: 9
+                                                font.pixelSize: 11
                                                 font.weight: Font.Bold
                                                 font.letterSpacing: 0.8
                                             }
@@ -575,7 +650,7 @@ Item {
                                             text: modelData.operator + " — " + modelData.storage
                                             color: W.Tokens.textPrimary
                                             font.family: W.Tokens.sans
-                                            font.pixelSize: 13
+                                            font.pixelSize: 15
                                             font.weight: Font.DemiBold
                                             elide: Text.ElideRight
                                         }
@@ -583,7 +658,7 @@ Item {
                                             text: (modelData.created_at || "").substring(0, 16).replace("T", " ")
                                             color: W.Tokens.textDim
                                             font.family: W.Tokens.mono
-                                            font.pixelSize: 10
+                                            font.pixelSize: 12
                                         }
                                     }
 
@@ -592,7 +667,7 @@ Item {
                                         text: modelData.start_time + " → " + modelData.end_time
                                         color: W.Tokens.textMuted
                                         font.family: W.Tokens.mono
-                                        font.pixelSize: 11
+                                        font.pixelSize: 13
                                     }
 
                                     Text {
@@ -601,7 +676,7 @@ Item {
                                         text: modelData.description
                                         color: W.Tokens.textDim
                                         font.family: W.Tokens.sans
-                                        font.pixelSize: 11
+                                        font.pixelSize: 13
                                         wrapMode: Text.WordWrap
                                         maximumLineCount: 2
                                         elide: Text.ElideRight
@@ -615,7 +690,7 @@ Item {
                             text: "No hay solicitudes enviadas todavía."
                             color: W.Tokens.textDim
                             font.family: W.Tokens.sans
-                            font.pixelSize: 12
+                            font.pixelSize: 14
                             topPadding: 8
                         }
                     }

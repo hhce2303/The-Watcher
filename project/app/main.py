@@ -553,6 +553,9 @@ def main() -> None:
         client=_req_client,
     )
 
+    if _req_client is not None:
+        settings_bridge.itWsHostsChanged.connect(_req_client.set_hosts)
+
     # ── Phase 4: Tell AppBridge where to find the preview JPEGs ─────────
     bridge.set_preview_paths(preview_paths)
 

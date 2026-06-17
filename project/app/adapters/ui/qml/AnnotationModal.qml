@@ -88,7 +88,7 @@ Rectangle {
                     text: "Evento marcado"
                     color: W.Tokens.textPrimary
                     font.family: W.Tokens.sans
-                    font.pixelSize: 13
+                    font.pixelSize: 15
                     font.weight: Font.DemiBold
                 }
                 Item { Layout.fillWidth: true }
@@ -96,7 +96,7 @@ Rectangle {
                     text: "T+" + root.eventTimecode
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.mono
-                    font.pixelSize: 11
+                    font.pixelSize: 13
                 }
             }
         }
@@ -117,7 +117,7 @@ Rectangle {
                     text: "ETIQUETA"
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.sans
-                    font.pixelSize: 9
+                    font.pixelSize: 11
                     font.weight: Font.DemiBold
                     font.letterSpacing: 1.4
                 }
@@ -141,7 +141,7 @@ Rectangle {
                         color: W.Tokens.textPrimary
                         placeholderTextColor: W.Tokens.textDim
                         font.family: W.Tokens.sans
-                        font.pixelSize: 13
+                        font.pixelSize: 15
                         background: Item {}
                     }
                 }
@@ -173,7 +173,7 @@ Rectangle {
                                 text: modelData
                                 color: selected ? W.Tokens.accentPrimary : W.Tokens.textMuted
                                 font.family: W.Tokens.sans
-                                font.pixelSize: 10
+                                font.pixelSize: 12
                                 font.weight: Font.Medium
                                 Behavior on color { ColorAnimation { duration: 120 } }
                             }
@@ -191,7 +191,7 @@ Rectangle {
                     text: "SEVERIDAD"
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.sans
-                    font.pixelSize: 9
+                    font.pixelSize: 11
                     font.weight: Font.DemiBold
                     font.letterSpacing: 1.4
                 }
@@ -244,7 +244,7 @@ Rectangle {
                                                ? modelData.color
                                                : W.Tokens.textMuted
                                         font.family: W.Tokens.sans
-                                        font.pixelSize: 11
+                                        font.pixelSize: 13
                                         font.weight: Font.DemiBold
                                         Behavior on color { ColorAnimation { duration: 120 } }
                                     }
@@ -264,7 +264,7 @@ Rectangle {
                     text: "NOTA (OPCIONAL)"
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.sans
-                    font.pixelSize: 9
+                    font.pixelSize: 11
                     font.weight: Font.DemiBold
                     font.letterSpacing: 1.4
                 }
@@ -288,7 +288,7 @@ Rectangle {
                         color: W.Tokens.textPrimary
                         placeholderTextColor: W.Tokens.textDim
                         font.family: W.Tokens.sans
-                        font.pixelSize: 12
+                        font.pixelSize: 14
                         wrapMode: TextArea.Wrap
                         background: Item {}
                     }
@@ -313,7 +313,7 @@ Rectangle {
                         text: "CLIP FINAL · 4 MIN"
                         color: W.Tokens.textMuted
                         font.family: W.Tokens.mono
-                        font.pixelSize: 10
+                        font.pixelSize: 12
                         font.letterSpacing: 0.8
                     }
                     Item { Layout.fillWidth: true }
@@ -324,22 +324,22 @@ Rectangle {
                             text: "−2:00 pre"
                             color: W.Tokens.accentPrimary
                             font.family: W.Tokens.mono
-                            font.pixelSize: 10
+                            font.pixelSize: 12
                         }
-                        Text { text: "│"; color: W.Tokens.borderSubtle; font.pixelSize: 10 }
+                        Text { text: "│"; color: W.Tokens.borderSubtle; font.pixelSize: 12 }
                         Text {
                             text: "● EVENT"
                             color: W.Tokens.accentRecord
                             font.family: W.Tokens.mono
-                            font.pixelSize: 10
+                            font.pixelSize: 12
                             font.weight: Font.Bold
                         }
-                        Text { text: "│"; color: W.Tokens.borderSubtle; font.pixelSize: 10 }
+                        Text { text: "│"; color: W.Tokens.borderSubtle; font.pixelSize: 12 }
                         Text {
                             text: "+2:00 post"
                             color: W.Tokens.accentPrimary
                             font.family: W.Tokens.mono
-                            font.pixelSize: 10
+                            font.pixelSize: 12
                         }
                     }
                 }
@@ -390,7 +390,7 @@ Rectangle {
                         text: "Sin etiqueta"
                         color: W.Tokens.textMuted
                         font.family: W.Tokens.sans
-                        font.pixelSize: 11
+                        font.pixelSize: 13
                         font.weight: Font.DemiBold
                     }
                 }
@@ -423,7 +423,7 @@ Rectangle {
                             text: "Guardar evento"
                             color: W.Tokens.bgBase
                             font.family: W.Tokens.sans
-                            font.pixelSize: 11
+                            font.pixelSize: 13
                             font.weight: Font.Bold
                             font.letterSpacing: 0.5
                         }
@@ -440,7 +440,7 @@ Rectangle {
                                 text: "↵"
                                 color: W.Tokens.bgBase
                                 font.family: W.Tokens.mono
-                                font.pixelSize: 9
+                                font.pixelSize: 11
                             }
                         }
                     }

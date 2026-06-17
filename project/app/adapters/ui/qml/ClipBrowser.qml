@@ -149,12 +149,12 @@ Item {
                             width: parent.width; elide: Text.ElideRight
                             text: root.selectedItem ? root.selectedItem.name : ""
                             color: W.Tokens.textPrimary
-                            font.family: W.Tokens.mono; font.pixelSize: 11
+                            font.family: W.Tokens.mono; font.pixelSize: 13
                         }
                         Text {
                             text: root.selectedItem ? root.selectedItem.size : ""
                             color: W.Tokens.textMuted
-                            font.family: W.Tokens.mono; font.pixelSize: 10
+                            font.family: W.Tokens.mono; font.pixelSize: 12
                         }
                     }
                 }
@@ -208,12 +208,12 @@ Item {
                                 Text {
                                     text: "⊛  Red"
                                     color: root.navStack.length === 0 ? W.Tokens.textPrimary : W.Tokens.accentPrimary
-                                    font.family: W.Tokens.sans; font.pixelSize: 12
+                                    font.family: W.Tokens.sans; font.pixelSize: 14
                                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.openRoot() }
                                 }
                                 Text {
                                     visible: root.navStack.length > 0
-                                    text: "  ›  "; color: W.Tokens.textDim; font.pixelSize: 12
+                                    text: "  ›  "; color: W.Tokens.textDim; font.pixelSize: 14
                                 }
                             }
 
@@ -225,7 +225,7 @@ Item {
                                     Text {
                                         text: modelData.label
                                         color: isLast ? W.Tokens.textPrimary : W.Tokens.accentPrimary
-                                        font.family: W.Tokens.sans; font.pixelSize: 12
+                                        font.family: W.Tokens.sans; font.pixelSize: 14
                                         MouseArea {
                                             anchors.fill: parent
                                             cursorShape: isLast ? Qt.ArrowCursor : Qt.PointingHandCursor
@@ -234,7 +234,7 @@ Item {
                                     }
                                     Text {
                                         visible: !isLast
-                                        text: "  ›  "; color: W.Tokens.textDim; font.pixelSize: 12
+                                        text: "  ›  "; color: W.Tokens.textDim; font.pixelSize: 14
                                     }
                                 }
                             }
@@ -282,7 +282,7 @@ Item {
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: root.navStack.length === 0 ? "◈" : "∅"
-                        color: Qt.rgba(1,1,1,0.06); font.pixelSize: 56
+                        color: Qt.rgba(1,1,1,0.06); font.pixelSize: 58
                     }
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -290,7 +290,7 @@ Item {
                               ? "Selecciona una ubicación en el panel lateral"
                               : "Esta carpeta está vacía"
                         color: W.Tokens.textMuted
-                        font.family: W.Tokens.sans; font.pixelSize: 13
+                        font.family: W.Tokens.sans; font.pixelSize: 15
                     }
                 }
 
@@ -378,7 +378,7 @@ Item {
                                 text: modelData.name
                                 color: modelData.isDir ? W.Tokens.textPrimary : W.Tokens.textMuted
                                 font.family: W.Tokens.mono
-                                font.pixelSize: 12
+                                font.pixelSize: 14
                                 elide: Text.ElideRight
                             }
 
@@ -388,7 +388,7 @@ Item {
                                 verticalAlignment: Text.AlignVCenter
                                 text: modelData.modified || "—"
                                 color: W.Tokens.textDim
-                                font.family: W.Tokens.mono; font.pixelSize: 11
+                                font.family: W.Tokens.mono; font.pixelSize: 13
                             }
 
                             // ── Size ─────────────────────────────────
@@ -398,7 +398,7 @@ Item {
                                 verticalAlignment: Text.AlignVCenter
                                 text: modelData.isDir ? "—" : (modelData.size || "—")
                                 color: W.Tokens.textDim
-                                font.family: W.Tokens.mono; font.pixelSize: 11
+                                font.family: W.Tokens.mono; font.pixelSize: 13
                             }
 
                             // ── Type badge ───────────────────────────
@@ -414,7 +414,7 @@ Item {
                                         id: typeTxt; anchors.centerIn: parent
                                         text: modelData.isDir ? "DIR" : (modelData.ext || "FILE")
                                         color: modelData.isDir ? W.Tokens.textDim : W.Tokens.accentPrimary
-                                        font.family: W.Tokens.mono; font.pixelSize: 9; font.weight: Font.Bold
+                                        font.family: W.Tokens.mono; font.pixelSize: 11; font.weight: Font.Bold
                                     }
                                 }
                             }
@@ -447,7 +447,7 @@ Item {
                             return ""
                         }
                         color: root.selectedItem ? W.Tokens.textPrimary : W.Tokens.textDim
-                        font.family: W.Tokens.mono; font.pixelSize: 11
+                        font.family: W.Tokens.mono; font.pixelSize: 13
                     }
 
                     // Date + size for selected file
@@ -456,7 +456,7 @@ Item {
                         text: root.selectedItem
                               ? root.selectedItem.modified + "  ·  " + root.selectedItem.size
                               : ""
-                        color: W.Tokens.textMuted; font.family: W.Tokens.mono; font.pixelSize: 10
+                        color: W.Tokens.textMuted; font.family: W.Tokens.mono; font.pixelSize: 12
                     }
 
                     // Play button
@@ -469,7 +469,7 @@ Item {
                             id: playLbl; anchors.centerIn: parent
                             text: "▶  REPRODUCIR"
                             color: W.Tokens.bgBase
-                            font.family: W.Tokens.sans; font.pixelSize: 10
+                            font.family: W.Tokens.sans; font.pixelSize: 12
                             font.weight: Font.Bold; font.letterSpacing: 0.4
                         }
                         HoverHandler { id: pbHov }
@@ -488,7 +488,7 @@ Item {
         Layout.fillWidth: true
         Layout.leftMargin: 14
         color: W.Tokens.textDim
-        font.family: W.Tokens.sans; font.pixelSize: 9
+        font.family: W.Tokens.sans; font.pixelSize: 11
         font.weight: Font.Bold; font.letterSpacing: 1.2
     }
 
@@ -513,13 +513,13 @@ Item {
             anchors { left: parent.left; leftMargin: 16; verticalCenter: parent.verticalCenter }
             spacing: 10
             Text {
-                text: parent.parent.icon; font.pixelSize: 13
+                text: parent.parent.icon; font.pixelSize: 15
                 color: parent.parent.active ? W.Tokens.accentPrimary : W.Tokens.textDim
             }
             Text {
                 text: parent.parent.label
                 color: parent.parent.active ? W.Tokens.accentPrimary : W.Tokens.textMuted
-                font.family: W.Tokens.sans; font.pixelSize: 12
+                font.family: W.Tokens.sans; font.pixelSize: 14
                 font.weight: parent.parent.active ? Font.Medium : Font.Normal
             }
         }
@@ -537,7 +537,7 @@ Item {
         Text {
             anchors.centerIn: parent; text: parent.label
             color: parent.enabled ? W.Tokens.textMuted : Qt.rgba(1,1,1,0.15)
-            font.pixelSize: 14
+            font.pixelSize: 16
         }
     }
 
@@ -551,7 +551,7 @@ Item {
             horizontalAlignment: parent.rightAlign ? Text.AlignRight : Text.AlignLeft
             text: parent.text
             color: W.Tokens.textDim
-            font.family: W.Tokens.sans; font.pixelSize: 9
+            font.family: W.Tokens.sans; font.pixelSize: 11
             font.weight: Font.Bold; font.letterSpacing: 0.9
         }
     }

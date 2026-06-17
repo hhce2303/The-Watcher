@@ -47,7 +47,7 @@ Rectangle {
                 text: "ROLLING BUFFER"
                 color: W.Tokens.textMuted
                 font.family: W.Tokens.sans
-                font.pixelSize: 9
+                font.pixelSize: 11
                 font.weight: Font.DemiBold
                 font.letterSpacing: 1.4
             }
@@ -64,7 +64,7 @@ Rectangle {
                     text: "2 MIN"
                     color: W.Tokens.accentPrimary
                     font.family: W.Tokens.mono
-                    font.pixelSize: 8
+                    font.pixelSize: 10
                     font.weight: Font.DemiBold
                     font.letterSpacing: 1.0
                 }
@@ -79,7 +79,7 @@ Rectangle {
                     + "  / 2:00"
                 color: W.Tokens.textPrimary
                 font.family: W.Tokens.mono
-                font.pixelSize: 10
+                font.pixelSize: 12
             }
 
             Rectangle {
@@ -93,7 +93,7 @@ Rectangle {
                 text: Math.min(segsFilled, segCount) + "/" + segCount + " seg"
                 color: W.Tokens.textMuted
                 font.family: W.Tokens.mono
-                font.pixelSize: 10
+                font.pixelSize: 12
             }
 
             Rectangle {
@@ -107,7 +107,7 @@ Rectangle {
                 text: "~" + bufferMB.toFixed(0) + " MB"
                 color: W.Tokens.textMuted
                 font.family: W.Tokens.mono
-                font.pixelSize: 10
+                font.pixelSize: 12
             }
         }
 
@@ -185,7 +185,7 @@ Rectangle {
                 text: "NOW"
                 color: W.Tokens.accentRecord
                 font.family: W.Tokens.mono
-                font.pixelSize: 8
+                font.pixelSize: 10
                 font.weight: Font.Bold
                 font.letterSpacing: 0.6
             }
@@ -230,35 +230,35 @@ Rectangle {
                 text: "−2:00"
                 color: W.Tokens.textDim
                 font.family: W.Tokens.mono
-                font.pixelSize: 9
+                font.pixelSize: 11
             }
             Item { Layout.fillWidth: true }
             Text {
                 text: "−1:30"
                 color: W.Tokens.textDim
                 font.family: W.Tokens.mono
-                font.pixelSize: 9
+                font.pixelSize: 11
             }
             Item { Layout.fillWidth: true }
             Text {
                 text: "−1:00"
                 color: W.Tokens.textDim
                 font.family: W.Tokens.mono
-                font.pixelSize: 9
+                font.pixelSize: 11
             }
             Item { Layout.fillWidth: true }
             Text {
                 text: "−0:30"
                 color: W.Tokens.textDim
                 font.family: W.Tokens.mono
-                font.pixelSize: 9
+                font.pixelSize: 11
             }
             Item { Layout.fillWidth: true }
             Text {
                 text: "NOW"
                 color: W.Tokens.accentRecord
                 font.family: W.Tokens.mono
-                font.pixelSize: 9
+                font.pixelSize: 11
                 font.weight: Font.DemiBold
             }
         }

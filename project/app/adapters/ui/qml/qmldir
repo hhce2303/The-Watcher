@@ -9,3 +9,12 @@ MiniMode          1.0 MiniMode.qml
 Statusbar         1.0 Statusbar.qml
 HealthBadge       1.0 HealthBadge.qml
 SettingsView      1.0 SettingsView.qml
+ITEditorView      1.0 ITEditorView.qml
+ITInboxPanel      1.0 ITInboxPanel.qml
+SupervisorView    1.0 SupervisorView.qml
+ClipBrowser       1.0 ClipBrowser.qml
+NASBrowser        1.0 NASBrowser.qml
+NotificationStrip 1.0 NotificationStrip.qml
+OperatorAvatar    1.0 OperatorAvatar.qml
+OutputPanel       1.0 OutputPanel.qml
+VideoEditor       1.0 VideoEditor.qml

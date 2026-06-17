@@ -96,7 +96,7 @@ Rectangle {
                     text: "📍 CAPTURANDO EVENTO"
                     color: W.Tokens.accentPrimary
                     font.family: W.Tokens.mono
-                    font.pixelSize: 10
+                    font.pixelSize: 12
                     font.weight: Font.DemiBold
                     font.letterSpacing: 1.2
                 }
@@ -147,7 +147,7 @@ Rectangle {
                     text: root.count
                     color: W.Tokens.accentPrimary
                     font.family: W.Tokens.mono
-                    font.pixelSize: 64
+                    font.pixelSize: 66
                     font.weight: Font.Bold
                 }
             }
@@ -161,7 +161,7 @@ Rectangle {
                     text: "Marcando evento"
                     color: W.Tokens.textPrimary
                     font.family: W.Tokens.sans
-                    font.pixelSize: 14
+                    font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
                 Text {
@@ -169,7 +169,7 @@ Rectangle {
                     text: "2 MIN PRE · 2 MIN POST · CLIP DE 4 MIN"
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.mono
-                    font.pixelSize: 9
+                    font.pixelSize: 11
                     font.letterSpacing: 1.0
                 }
             }
@@ -194,7 +194,7 @@ Rectangle {
                     text: "CANCELAR · ESC"
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.mono
-                    font.pixelSize: 10
+                    font.pixelSize: 12
                     font.weight: Font.DemiBold
                     font.letterSpacing: 1.0
                 }

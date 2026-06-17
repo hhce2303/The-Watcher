@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -22,6 +23,9 @@ _RESTART_IDLE    = "idle"
 _RESTART_RUNNING = "restarting"
 _RESTART_DONE    = "done"
 _RESTART_ERROR   = "error"
+
+# Windows Firewall rule name prefix for the IT WebSocket server port.
+_FW_RULE_PREFIX = "TheWatcher-IT-WS"
 
 
 class SettingsBridge(QObject):
@@ -52,6 +56,8 @@ class SettingsBridge(QObject):
     systemChanged        = Signal()
     restartStateChanged  = Signal()
     roleChanged          = Signal()
+    itWsHostsChanged     = Signal(list)
+    itWsPortStatusChanged = Signal()
 
     def __init__(
         self,
@@ -72,6 +78,7 @@ class SettingsBridge(QObject):
         self._it_unlocked: bool = False
         self._restart_state: str = _RESTART_IDLE
         self._restart_cb: Optional[Callable[[str, str], None]] = None
+        self._it_ws_port_status: str = "unknown"  # unknown | open | closed | opening | error
 
     def set_restart_callback(self, callback: Callable[[str, str], None]) -> None:
         """Register the restart function from main.py.
@@ -272,6 +279,7 @@ class SettingsBridge(QObject):
         self._it_ws_hosts.append(host)
         self._persist(lambda c: setattr(c, "it_ws_hosts", list(self._it_ws_hosts)))
         self.systemChanged.emit()
+        self.itWsHostsChanged.emit(list(self._it_ws_hosts))
 
     @Slot(str)
     def removeItWsHost(self, host: str) -> None:
@@ -280,6 +288,7 @@ class SettingsBridge(QObject):
         self._it_ws_hosts.remove(host)
         self._persist(lambda c: setattr(c, "it_ws_hosts", list(self._it_ws_hosts)))
         self.systemChanged.emit()
+        self.itWsHostsChanged.emit(list(self._it_ws_hosts))
 
     @Slot()
     def lockIT(self) -> None:
@@ -288,6 +297,80 @@ class SettingsBridge(QObject):
             self._it_unlocked = False
             logger.info("IT access locked.")
             self.roleChanged.emit()
+
+    # ── IT WS port / firewall ─────────────────────────────────────────
+
+    @Property(str, notify=itWsPortStatusChanged)
+    def itWsPortStatus(self) -> str:
+        return self._it_ws_port_status
+
+    @Property(int, notify=encoderInfoChanged)
+    def itWsPort(self) -> int:
+        return self._settings.it_ws_port
+
+    @Slot()
+    def checkItWsPortStatus(self) -> None:
+        """Check whether the Windows Firewall inbound rule for the IT WS port exists."""
+        def _run() -> None:
+            port = self._settings.it_ws_port
+            rule = f"{_FW_RULE_PREFIX}-{port}"
+            try:
+                result = subprocess.run(
+                    ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule}"],
+                    capture_output=True, text=True, timeout=8,
+                )
+                open_ = result.returncode == 0 and "No rules match" not in result.stdout
+                self._it_ws_port_status = "open" if open_ else "closed"
+            except Exception:
+                self._it_ws_port_status = "unknown"
+            self.itWsPortStatusChanged.emit()
+
+        threading.Thread(target=_run, daemon=True, name="fw-check").start()
+
+    @Slot()
+    def openItWsPort(self) -> None:
+        """Add a Windows Firewall inbound TCP rule for the IT WS port.
+
+        Requires the process to have Administrator privileges.
+        Sets itWsPortStatus to 'error' and logs a warning if it fails.
+        """
+        self._it_ws_port_status = "opening"
+        self.itWsPortStatusChanged.emit()
+
+        def _run() -> None:
+            port = self._settings.it_ws_port
+            rule = f"{_FW_RULE_PREFIX}-{port}"
+            try:
+                # Remove stale rule first (ignore errors)
+                subprocess.run(
+                    ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={rule}"],
+                    capture_output=True, timeout=8,
+                )
+                result = subprocess.run(
+                    [
+                        "netsh", "advfirewall", "firewall", "add", "rule",
+                        f"name={rule}",
+                        "dir=in", "action=allow", "protocol=TCP",
+                        f"localport={port}",
+                        "profile=any",
+                    ],
+                    capture_output=True, text=True, timeout=8,
+                )
+                if result.returncode == 0:
+                    self._it_ws_port_status = "open"
+                    logger.info("Firewall rule added for IT WS port {}.", port)
+                else:
+                    self._it_ws_port_status = "error"
+                    logger.warning(
+                        "Failed to add firewall rule for port {}: {}",
+                        port, result.stderr.strip() or result.stdout.strip(),
+                    )
+            except Exception:
+                self._it_ws_port_status = "error"
+                logger.exception("openItWsPort: subprocess error.")
+            self.itWsPortStatusChanged.emit()
+
+        threading.Thread(target=_run, daemon=True, name="fw-open").start()
 
     # ── Helpers ───────────────────────────────────────────────────────
 

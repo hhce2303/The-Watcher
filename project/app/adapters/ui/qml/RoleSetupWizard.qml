@@ -64,7 +64,7 @@ Item {
                 text: "The Watcher"
                 color: W.Tokens.accentPrimary
                 font.family: W.Tokens.mono
-                font.pixelSize: 13
+                font.pixelSize: 15
                 font.weight: Font.DemiBold
                 font.letterSpacing: 2.0
             }
@@ -73,7 +73,7 @@ Item {
                 text: "Configura este equipo"
                 color: W.Tokens.textPrimary
                 font.family: W.Tokens.sans
-                font.pixelSize: 28
+                font.pixelSize: 30
                 font.weight: Font.DemiBold
             }
             Text {
@@ -81,7 +81,7 @@ Item {
                 text: "Selecciona el rol de este PC. Esta configuración se guarda localmente y\npuede cambiarse después con el PIN IT."
                 color: W.Tokens.textMuted
                 font.family: W.Tokens.sans
-                font.pixelSize: 13
+                font.pixelSize: 15
                 horizontalAlignment: Text.AlignHCenter
                 lineHeight: 1.5
             }
@@ -129,7 +129,7 @@ Item {
 
                         Text {
                             text: modelData.icon
-                            font.pixelSize: 28
+                            font.pixelSize: 30
                         }
 
                         ColumnLayout {
@@ -138,14 +138,14 @@ Item {
                                 text: modelData.title
                                 color: W.Tokens.textPrimary
                                 font.family: W.Tokens.sans
-                                font.pixelSize: 16
+                                font.pixelSize: 18
                                 font.weight: Font.DemiBold
                             }
                             Text {
                                 text: modelData.sub
                                 color: W.Tokens.accentPrimary
                                 font.family: W.Tokens.mono
-                                font.pixelSize: 10
+                                font.pixelSize: 12
                                 font.letterSpacing: 0.8
                             }
                         }
@@ -155,7 +155,7 @@ Item {
                             text: modelData.desc
                             color: W.Tokens.textMuted
                             font.family: W.Tokens.sans
-                            font.pixelSize: 12
+                            font.pixelSize: 14
                             wrapMode: Text.WordWrap
                             lineHeight: 1.5
                         }
@@ -206,7 +206,7 @@ Item {
                        ? W.Tokens.bgBase
                        : W.Tokens.textDim
                 font.family: W.Tokens.sans
-                font.pixelSize: 13
+                font.pixelSize: 15
                 font.weight: Font.DemiBold
             }
         }

@@ -61,7 +61,7 @@ Item {
                     text: "BANDEJA IT"
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.mono
-                    font.pixelSize: 9
+                    font.pixelSize: 11
                     font.letterSpacing: 1.4
                 }
 
@@ -82,7 +82,7 @@ Item {
                         text: parent.pendingCount
                         color: "#FBBF24"
                         font.family: W.Tokens.mono
-                        font.pixelSize: 9
+                        font.pixelSize: 11
                         font.weight: Font.Bold
                     }
                 }
@@ -99,7 +99,7 @@ Item {
                         anchors.centerIn: parent
                         text: "↺ Refrescar"
                         color: W.Tokens.textMuted
-                        font.family: W.Tokens.sans; font.pixelSize: 11
+                        font.family: W.Tokens.sans; font.pixelSize: 13
                     }
                 }
             }
@@ -148,7 +148,7 @@ Item {
                                         anchors.centerIn: parent
                                         text: root.statusLabel(modelData.status)
                                         color: root.statusColor(modelData.status)
-                                        font.family: W.Tokens.mono; font.pixelSize: 9
+                                        font.family: W.Tokens.mono; font.pixelSize: 11
                                         font.weight: Font.Bold; font.letterSpacing: 0.8
                                     }
                                 }
@@ -157,14 +157,14 @@ Item {
                                     text: modelData.operator + "  ·  " + modelData.storage
                                     color: W.Tokens.textPrimary
                                     font.family: W.Tokens.sans
-                                    font.pixelSize: 13
+                                    font.pixelSize: 15
                                     font.weight: Font.DemiBold
                                     elide: Text.ElideRight
                                 }
                                 Text {
                                     text: (modelData.supervisor_host || "")
                                     color: W.Tokens.textDim
-                                    font.family: W.Tokens.mono; font.pixelSize: 10
+                                    font.family: W.Tokens.mono; font.pixelSize: 12
                                 }
                             }
 
@@ -172,7 +172,7 @@ Item {
                             Text {
                                 text: modelData.start_time + "  →  " + modelData.end_time
                                 color: W.Tokens.accentPrimary
-                                font.family: W.Tokens.mono; font.pixelSize: 12
+                                font.family: W.Tokens.mono; font.pixelSize: 14
                             }
 
                             // Description
@@ -181,7 +181,7 @@ Item {
                                 visible: (modelData.description || "") !== ""
                                 text: modelData.description
                                 color: W.Tokens.textMuted
-                                font.family: W.Tokens.sans; font.pixelSize: 12
+                                font.family: W.Tokens.sans; font.pixelSize: 14
                                 wrapMode: Text.WordWrap
                                 maximumLineCount: 3
                                 elide: Text.ElideRight
@@ -213,7 +213,7 @@ Item {
                                         anchors.centerIn: parent
                                         text: "Marcar procesando"
                                         color: W.Tokens.accentPrimary
-                                        font.family: W.Tokens.sans; font.pixelSize: 11
+                                        font.family: W.Tokens.sans; font.pixelSize: 13
                                         font.weight: Font.DemiBold
                                     }
                                 }
@@ -235,7 +235,7 @@ Item {
                                         anchors.centerIn: parent
                                         text: "Marcar listo"
                                         color: "#4ADE80"
-                                        font.family: W.Tokens.sans; font.pixelSize: 11
+                                        font.family: W.Tokens.sans; font.pixelSize: 13
                                         font.weight: Font.DemiBold
                                     }
                                 }
@@ -255,12 +255,12 @@ Item {
                         Text {
                             Layout.alignment: Qt.AlignHCenter
                             text: "📥"
-                            font.pixelSize: 28
+                            font.pixelSize: 30
                         }
                         Text {
                             text: "Sin requests pendientes"
                             color: W.Tokens.textMuted
-                            font.family: W.Tokens.sans; font.pixelSize: 12
+                            font.family: W.Tokens.sans; font.pixelSize: 14
                         }
                     }
                 }

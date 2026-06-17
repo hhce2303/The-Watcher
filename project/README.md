@@ -1,724 +1,299 @@
-# Event-Based Pre/Post Recording System
+# The Watcher
+
+Always-on screen recorder with pre/post event capture. Built with Python + FFmpeg + PySide6/QML using a pragmatic Hexagonal (Ports & Adapters) architecture.
+
+---
 
 ## Overview
 
-This project is a lightweight, event‑driven video recording service designed to run on a workstation that is already busy with other processes. The goal is to capture **2 minutes before and 2 minutes after** an event, then produce a final MP4 clip automatically.
+Key characteristics:
 
-Key constraints:
-
-* Minimal CPU/RAM impact
-* Single window / browser capture
-* Local processing and storage
-* Always-on-top recording source
-* Expected events: 2–3 per hour
-* Recording duration per event: ~4 minutes
-* Output resolution: 1920x1080
-* Clip retention: 1–2 hours minimum
-
-The system is built using **Python + FFmpeg** with a pragmatic **Hexagonal (Ports & Adapters) Architecture**.
+- Continuous rolling buffer — captures the last N hours of every connected monitor
+- Event clip — marks a moment and produces a `[pre] + [post]` MP4 automatically
+- Multi-monitor — one FFmpeg worker per physical screen; combined grid clip + per-monitor raw clips
+- Always-on — starts recording at login; the UI is optional and can be closed
+- Role-aware — three modes: **Operator** (records), **IT** (records + receives clip requests), **Supervisor** (sends clip requests, no recording)
 
 ---
 
-# Architecture
+## Architecture
 
-## Why Hexagonal (Pragmatic Version)
+### Hexagonal (Ports & Adapters)
 
-We need a scalable and professional architecture but without unnecessary complexity.
-
-This project uses a **minimal hexagonal architecture**:
-
+```
 Core (Business Logic)
-→ Ports (Interfaces)
-→ Adapters (External tools: FFmpeg, filesystem, UI trigger)
+ └── Ports (Interfaces)
+      └── Adapters (FFmpeg / filesystem / UI / WebSocket)
+```
 
-The recording service itself is implemented as its own mini-hexagon inside the application core.
+The recording service is a self-contained inner hexagon. The UI is a pure adapter — it calls services and observes their state but contains no business logic.
 
-This gives us:
+### Role system
 
-* Testability
-* Easy replacement of FFmpeg or UI trigger
-* Clear separation of responsibilities
-* Scalability for future integrations
+| Role | Records | Receives requests | Sends requests |
+|---|---|---|---|
+| `operator` | yes | no | no |
+| `it` | yes | yes (WS server) | no |
+| `supervisor` | no | no | yes (WS client) |
+
+Role is configured via `USER_ROLE` in `.env`. The `supervisor` role skips the entire recording stack at startup.
+
+### Request flow (IT ↔ Supervisor)
+
+```
+Supervisor UI
+  → AppBridge.sendClipRequest()
+  → ClipRequestClient (WS)
+       → ClipRequestServer (WS) on IT machine
+            → JsonRequestAdapter (persisted on disk)
+            → ITInboxPanel (QML)
+```
 
 ---
 
-## High Level Flow
-
-1. System continuously records a rolling buffer (2 minutes).
-2. User presses a button → Event triggered.
-3. System keeps recording for 2 minutes more.
-4. Recording service trims pre/post segments.
-5. Final MP4 is produced.
-6. Temporary files are cleaned automatically.
-
----
-
-# Project Structure
+## Project Structure
 
 ```
 project/
-│
 ├── app/
 │   ├── core/
-│   │   ├── event_listener.py
-│   │   ├── recording_service/
-│   │   │   ├── service.py
-│   │   │   ├── buffer_manager.py
-│   │   │   ├── clip_builder.py
+│   │   ├── recording_service/       ← rolling buffer, clip builder, segment index
+│   │   │   ├── service.py           ← RecordingService (multi-monitor workers)
+│   │   │   ├── buffer_manager.py    ← circular segment retention
+│   │   │   ├── clip_builder.py      ← trim + concat pipeline
+│   │   │   ├── segment_index.py     ← time-range lookup
+│   │   │   ├── monitor_worker.py    ← per-monitor recording unit
+│   │   │   ├── supervisor.py        ← crash-recovery / auto-restart
 │   │   │   └── models.py
-│   │   │
-│   │   └── ports/
-│   │       ├── recorder_port.py
-│   │       ├── storage_port.py
-│   │       └── trigger_port.py
+│   │   ├── event_service.py         ← event trigger + cooldown + scheduling
+│   │   ├── monitor_detection/       ← hot-plug detection (background thread)
+│   │   ├── recording_health/        ← health checks + watchdog
+│   │   ├── player/                  ← clip inspection (ffprobe)
+│   │   ├── disk_monitor.py          ← low-disk protection
+│   │   ├── role.py                  ← role constants + enforcement
+│   │   └── ports/                   ← abstract interfaces
 │   │
 │   ├── adapters/
 │   │   ├── ffmpeg/
-│   │   │   ├── recorder_adapter.py
-│   │   │   ├── trim_adapter.py
-│   │   │   └── thumbnail_adapter.py
-│   │   │
+│   │   │   ├── recorder_adapter.py      ← gdigrab capture + embedded 2fps preview
+│   │   │   ├── trim_adapter.py          ← event clip trimming
+│   │   │   ├── encoder_selector.py      ← NVENC / QuickSync / AMF / CPU auto-detect
+│   │   │   ├── combined_clip_builder.py ← multi-monitor grid + timestamp overlay
+│   │   │   ├── hourly_recording_builder.py ← rolling hourly raw clips
+│   │   │   ├── mp4_converter_adapter.py
+│   │   │   └── timestamp_adapter.py
 │   │   ├── filesystem/
-│   │   │   └── storage_adapter.py
-│   │   │
+│   │   │   ├── storage_adapter.py
+│   │   │   ├── request_adapter.py   ← JSON persistence for clip requests
+│   │   │   └── user_config_adapter.py
+│   │   ├── monitor/
+│   │   │   └── screeninfo_adapter.py
+│   │   ├── ws/
+│   │   │   ├── request_server.py    ← IT WebSocket server
+│   │   │   └── request_client.py    ← Supervisor WebSocket client
 │   │   └── ui/
-│   │       └── button_trigger.py
+│   │       ├── Main.qml             ← root window, tab navigation
+│   │       ├── app_bridge.py        ← Python ↔ QML contract (QObject)
+│   │       ├── settings_bridge.py   ← settings panel contract
+│   │       ├── tray_icon.py         ← system tray
+│   │       ├── screenshot_provider.py ← GDI monitor thumbnail provider
+│   │       └── qml/
+│   │           ├── Tokens.qml           ← design tokens (singleton)
+│   │           ├── BufferTimeline.qml   ← segment timeline visualization
+│   │           ├── PreRollOverlay.qml   ← pre-roll countdown overlay
+│   │           ├── AnnotationModal.qml  ← clip annotation dialog
+│   │           ├── MiniMode.qml         ← compact always-on-top mode
+│   │           ├── SettingsView.qml     ← encoder / path / role settings
+│   │           ├── HealthBadge.qml      ← recording health indicator
+│   │           ├── ClipBrowser.qml      ← file browser (local + UNC/NAS)
+│   │           ├── SupervisorView.qml   ← operator list + request form
+│   │           ├── ITInboxPanel.qml     ← clip request inbox (IT role)
+│   │           ├── Statusbar.qml
+│   │           └── Components/
+│   │               ├── WDropdown.qml
+│   │               ├── WHotkey.qml
+│   │               ├── WPathInput.qml
+│   │               ├── WStepper.qml
+│   │               ├── WToggle.qml
+│   │               └── WSeg.qml
 │   │
-│   └── main.py
+│   ├── infrastructure/
+│   │   ├── config.py        ← Pydantic settings (.env)
+│   │   ├── logging_setup.py ← loguru configuration
+│   │   └── autostart.py     ← Windows registry autostart
+│   │
+│   └── main.py              ← startup wiring (services → bridge → QML engine)
 │
-└── README.md
+├── installer/
+│   ├── build.ps1            ← PyInstaller build script
+│   ├── install.ps1          ← install to %LOCALAPPDATA%
+│   └── The Watcher.iss      ← Inno Setup config
+│
+└── tests/
 ```
 
 ---
 
-# Core Concepts
+## UI Architecture (QML + AppBridge)
 
-## 1. Continuous Rolling Buffer
+The UI was migrated from a legacy `QWidgets`-based `MainWindow` to a **PySide6 QML** interface in the current implementation.
 
-A background FFmpeg process continuously records the target window and splits the stream into short segments (for example 10–15 seconds each).
+### AppBridge
 
-This creates a **ring buffer** that always contains the last 2 minutes of video.
+`AppBridge` is the single Python ↔ QML contract (`QObject` registered as a context property). It exposes:
 
-Why this approach?
+**Properties (QML reads, Python notifies via signals):**
 
-* Extremely efficient
-* No heavy RAM usage
-* Easy trimming
-* Used by professional video systems
-
----
-
-## 2. Event Trigger
-
-The event listener is intentionally simple.
-
-For the first milestone, an event is triggered by a **button press**.
-
-Future adapters could include:
-
-* Websocket listener
-* API endpoint
-* Hotkey
-* External alarm system
-
-The core never knows *how* the event happens.
-
-It only receives:
-
-```
-EventTriggered(timestamp)
-```
-
----
-
-## 3. Recording Service (Inner Hexagon)
-
-The recording service is the heart of the system.
-
-Responsibilities:
-
-* Maintain rolling buffer
-* Freeze buffer when event occurs
-* Continue recording post-event footage
-* Build final clip
-
-### Recording Timeline
-
-```
-<--- 120s PRE BUFFER ---> [ EVENT ] <--- 120s POST RECORD --->
-```
-
-When the event occurs:
-
-1. The buffer is frozen.
-2. System records 120 additional seconds.
-3. Clip builder merges segments.
-4. Final MP4 is generated.
-
----
-
-## 4. Clip Builder
-
-The clip builder performs:
-
-* Segment selection
-* Video concatenation
-* Encoding to final MP4
-
-Output format:
-
-* H.264
-* 1920x1080
-* Optimized for quick playback
-
----
-
-## 5. Storage Strategy
-
-We separate **temporary files** from **final clips**.
-
-Temporary files:
-
-* Ring buffer segments
-* Auto-deleted periodically
-
-Final clips:
-
-* Saved locally
-* Stored for 1–2 hours minimum
-
-No retention policy required beyond this.
-
----
-
-# Ports & Adapters
-
-## Recorder Port
-
-Defines actions the core expects:
-
-* Start continuous recording
-* Stop recording
-* Get buffer segments
-
-Adapter implementation: FFmpeg
-
----
-
-## Storage Port
-
-Defines:
-
-* Save clip
-* Delete temporary files
-* Retrieve segment list
-
-Adapter implementation: Local filesystem
-
----
-
-## Trigger Port
-
-Defines:
-
-* Subscribe to event
-
-Adapter implementation: UI button
-
----
-
-# How Python Talks to FFmpeg
-
-Communication strategy:
-
-* Python spawns FFmpeg as a subprocess
-* Commands are generated dynamically
-* Python orchestrates the pipeline
-* FFmpeg performs heavy video work
-
-This keeps Python lightweight and avoids CPU spikes.
-
----
-
-# Efficiency Strategy
-
-Key design decisions to protect system performance:
-
-* FFmpeg handles encoding (native C performance)
-* Segmented recording prevents large files
-* Asynchronous queues avoid blocking
-* Single recording window only
-* No database required
-
-The system is safe to run alongside other heavy software.
-
----
-
-# Event Workflow (Step by Step)
-
-1. Application starts
-2. FFmpeg begins rolling recording
-3. User presses event button
-4. Core freezes buffer snapshot
-5. Post-recording continues 120 seconds
-6. Segments are merged
-7. Final MP4 is generated
-8. Temp files cleaned
-
----
-
-# Future Scalability
-
-This architecture allows adding later:
-
-* Multiple recording sources
-* Websocket event triggers
-* Cloud upload
-* Thumbnail generation
-* AI event detection
-
-Without rewriting the core logic.
-
----
-
-# Conclusion
-
-This system recreates a professional pre/post event recording workflow using:
-
-* Python orchestration
-* FFmpeg processing
-* Minimal hexagonal architecture
-
-It is efficient, modular, and ready to scale.
-
----
-
-# Development Master Plan (Milestones)
-
-This roadmap converts the architecture into an execution plan. Each milestone produces a testable deliverable and reduces technical risk early.
-
----
-
-## Milestone 0 — Project Bootstrap
-
-**Goal:** Create the foundation and dev environment.
-
-Deliverables:
-
-* Python project scaffold
-* Dependency management (Poetry or venv + pip-tools)
-* Logging system
-* Config management (.env)
-* Folder structure aligned with hexagonal architecture
-
-Proposed structure:
-
-```
-src/
-  core/
-    recorder/
-    clipper/
-    events/
-    ports/
-  adapters/
-    ffmpeg/
-    filesystem/
-    ui/
-  infrastructure/
-    scheduler/
-    config/
-    logging/
-main.py
-```
-
-Exit criteria:
-
-* App starts
-* Logging works
-* Config loads
-
----
-
-## Milestone 1 — Continuous Segment Recorder (Critical Risk Reduction)
-
-**Goal:** Prove continuous low‑resource recording is viable.
-
-Implement:
-
-* FFmpeg adapter
-* Segment recording (2s segments)
-* Circular buffer deletion policy
-* Segment index tracking
-
-Key technical risks addressed:
-
-* CPU usage
-* Disk IO impact
-* Long‑running process stability
-
-Success metrics:
-
-* 2+ hours continuous recording
-* CPU < 5–8%
-* No memory leaks
-* Disk growth capped
-
-Exit criteria:
-
-* Folder continuously contains last 2 hours of segments
-
----
-
-## Milestone 2 — Segment Index & Time Mapping
-
-**Goal:** Make segments queryable by time.
-
-Implement:
-
-* In‑memory segment index
-* Segment metadata model
-* Time‑range lookup API
-
-Core capability:
-
-```
-get_segments_between(start, end)
-```
-
-Exit criteria:
-
-* Can retrieve segments for any timestamp within buffer
-
----
-
-## Milestone 3 — Clip Builder (FFmpeg Concat Pipeline)
-
-**Goal:** Produce final MP4 clips.
-
-Implement:
-
-* Concat file generator
-* FFmpeg clip assembly
-* Error handling & retries
-* Clip naming convention
-
-Output example:
-
-```
-clips/2026-04-27_13-22-10_event.mp4
-```
-
-Exit criteria:
-
-* Build 4‑minute clip from historical segments
-* No re‑encoding (stream copy)
-
----
-
-## Milestone 4 — Event Service + Scheduler
-
-**Goal:** Connect event trigger to delayed clip creation.
-
-Implement:
-
-* Event model
-* Cooldown protection (30s)
-* Background job scheduler
-* Delayed clip creation (+120s post buffer)
-
-Flow:
-
-1. User presses button
-2. Event created
-3. Clip job scheduled
-4. Job executes after post buffer window
-
-Exit criteria:
-
-* Press button → clip appears 2 minutes later
-
----
-
-## Milestone 5 — Minimal UI (Operator Tool)
-
-**Goal:** Provide basic operator interface.
-
-UI features:
-
-* Recording status indicator
-* "Mark Event" button
-* Activity log
-* System tray icon (recording indicator)
-
-Tech options:
-
-* PySide6 (preferred)
-* Tkinter (fallback)
-
-Exit criteria:
-
-* Operator can trigger events reliably
-
----
-
-## Milestone 6 — Reliability & Hardening
-
-**Goal:** Make the system production‑safe.
-
-Add:
-
-* Crash recovery
-* Recorder auto‑restart
-* Disk space monitoring
-* Clip build retry queue
-* Structured logging
-
-Exit criteria:
-
-* Survives FFmpeg crash
-* Survives full disk scenario
-
----
-
-## Milestone 7 — Performance Optimization
-
-**Goal:** Ensure minimal impact on host machine.
-
-Tasks:
-
-* CPU profiling
-* IO profiling
-* Segment size tuning
-* Encoder preset tuning
-* Stress testing under load
-
-Exit criteria:
-
-* Stable on busy workstation
-
----
-
-## Milestone 8 — Packaging & Deployment
-
-**Goal:** Deliver Windows executable.
-
-Tasks:
-
-* PyInstaller packaging
-* FFmpeg bundling
-* Auto‑start option
-* Configurable paths
-
-Exit criteria:
-
-* Single installer
-* Runs on clean Windows machine
-
----
-
-## Milestone 9 — Future Integrations (Post‑MVP)
-
-**Not required for first release**
-
-Planned extensions:
-
-* WebSocket event adapter
-* Hotkey trigger
-* Clip thumbnails
-* Clip viewer
-* Upload to server
-
----
-
-# Development Strategy
-
-Approach:
-
-* Deliver vertical slices
-* Validate performance early
-* Avoid premature UI work
-* Reduce FFmpeg risk first
-
-Priority order:
-
-1. Recorder stability
-2. Clip correctness
-3. Event workflow
-4. UI polish
-
----
-
-# Estimated Timeline (Solo Developer)
-
-| Milestone    | Duration |
-| ------------ | -------- |
-| Bootstrap    | 1–2 days |
-| Recorder     | 3–5 days |
-| Index        | 2 days   |
-| Clip builder | 3 days   |
-| Event system | 2 days   |
-| UI           | 3 days   |
-| Hardening    | 4–6 days |
-| Optimization | 3–4 days |
-| Packaging    | 2 days   |
-
-**Total MVP:** ~3–4 weeks
-
----
-
-End of development roadmap.
-
----
-
-# Minimal UI Specification (MVP)
-
-The UI is required but intentionally minimal. It acts strictly as an adapter and must contain **no business logic**.
-
-## UI Responsibilities
-
-The UI must only:
-
-* Trigger manual events
-* Display recorder status
-* Display system logs
-* Provide system tray controls
-
-The recording engine must continue running if the UI crashes or is closed.
-
----
-
-## Technology Choice
-
-Framework: **PySide6**
-
-Rationale:
-
-* Professional desktop UI
-* Stable Windows deployment
-* Compatible with PyInstaller
-* No licensing risks
-
----
-
-## UI Features
-
-### 1. Recording Status Indicator
-
-Must clearly show:
-
-* Recording active / inactive
-* Buffer duration active
-
-Purpose:
-
-* Operator confidence
-* Antivirus / corporate compliance (visible recording indicator)
-
----
-
-### 2. Mark Event Button
-
-Primary operator action.
-
-Behavior:
-
-* Single click
-* No confirmation dialogs
-* Immediate response
-
-Action flow:
-
-```
-UI → EventService.trigger_manual_event()
-```
-
----
-
-### 3. System Log Panel
-
-Scrollable log output displaying:
-
-* Recorder lifecycle
-* Segment creation
-* Event triggers
-* Clip scheduling
-* Clip creation results
-
-Purpose:
-
-* Transparency
-* Troubleshooting
-
----
-
-### 4. System Tray Icon
-
-Required for long‑running background usage.
-
-Tray menu:
-
-```
-Open Dashboard
-Exit
-```
-
-Recording must remain active while minimized.
-
----
-
-## Application Startup Order
-
-The recorder must start before the UI.
-
-Startup sequence:
-
-```
-Application start
- → Start RecorderService
- → Start Scheduler
- → Launch UI
-```
-
-This ensures recording begins immediately and continues independently of UI state.
-
----
-
-## UI Architecture Rule
-
-UI is an **Adapter layer** in the hexagonal architecture.
-
-UI communicates only with:
-
-* EventService
-* RecorderService (read‑only status)
-* ClipService (notifications)
-
-The UI must never interact directly with:
-
-* FFmpeg
-* Filesystem
-* Scheduler
-
----
-
-# Milestone Status
-
-| Milestone | Description | Status |
+| Property | Type | Description |
 |---|---|---|
-| M0 | Project bootstrap (venv, structure, CI) | Done |
-| M1 | FFmpeg gdigrab recorder adapter | Done |
-| M2 | Segment index + buffer manager | Done |
-| M3 | Clip builder (trim + concat) | Done |
-| M4 | Event service + cooldown logic | Done |
-| M5 | PySide6 operator UI | Done |
-| Monitor | Multi-monitor selection (screeninfo) | Done |
-| M6 | Reliability & hardening (supervisor, disk monitor, crash recovery) | Done |
-| M7 | Performance optimization (hardware encoder selector) | Done |
-| M8 | Packaging & deployment | **Done** |
+| `isRecording` | `bool` | Whether the recorder is active |
+| `recordSec` | `int` | Total seconds of buffered footage |
+| `monitors` | `list` | All detected monitors with selection state |
+| `clips` | `list` | Recent MP4 clips, newest first |
+| `eventCount` | `int` | Events triggered this session |
+| `currentClipPath` | `str` | Path of the clip loaded in the player |
+| `currentClipInfo` | `map` | Codec / resolution / fps / bitrate |
 
-## M8 Build Instructions
+**Slots (QML calls Python):**
 
-Requirements: Python 3.13, FFmpeg installed via winget (Gyan.FFmpeg), project venv set up.
+| Slot | Description |
+|---|---|
+| `triggerEvent()` | Mark an event; respects cooldown |
+| `toggleMonitor(fingerprint)` | Toggle clip-selection for a screen |
+| `refreshClips()` | Reload clip list from disk |
+| `loadClip(path)` | Load a clip into the player |
+| `mediaUrl(path)` | Convert local/UNC path → media URL |
+| `listDirectory(path)` | Browse local dirs or UNC shares |
+| `identifyMonitors()` | Force monitor re-detection |
+| `sendClipRequest(json)` | Send a clip request (Supervisor role) |
+| `getMyRequests()` | Supervisor outbox |
+| `getInboxRequests()` | IT inbox |
+| `updateRequestStatus(id, status)` | IT: update request + broadcast via WS |
+| `listAllOperators()` | Enumerate operator folders across all storage shares |
+
+**Signals (Python → QML):**
+
+| Signal | Description |
+|---|---|
+| `recordingFailed(msg)` | Worker crash notification |
+| `clipFailed(msg)` | Clip build failure |
+| `logMessage(msg)` | Log forwarding to QML console panel |
+| `requestShowWindow()` | Tray icon → show window |
+| `requestReceived()` | New clip request arrived (IT role) |
+| `requestStatusChanged(id, status)` | Status update from IT (Supervisor role) |
+
+### Preview system
+
+The recorder FFmpeg process writes a JPEG at 2fps via `filter_complex` split — the same process as the recording. `AppBridge` polls these files every 500ms on the Qt main thread and pushes frames to `QVideoSink` instances registered by QML.
+
+No separate screen-capture process = no screen flickering during preview.
+
+### Monitor detection
+
+`MonitorDetectionService` polls `screeninfo` every 5 seconds in a background thread. Hot-plug events (monitor connected/disconnected) are forwarded to `RecordingService` (to add/remove workers) and to `AppBridge` via a thread-safe signal bridge (the signal is emitted from the detection thread, handled in the Qt main thread).
+
+### Tab layout
+
+| Tab | Ctrl shortcut | Shown for |
+|---|---|---|
+| Grabación (Recording) | `Ctrl+1` | operator, IT |
+| Clips | `Ctrl+2` | all roles |
+| Supervisor | `Ctrl+3` | supervisor only |
+| IT Inbox | — | IT only |
+| Mini-modo | `Ctrl+4` | operator, IT |
+| Ajustes | `Ctrl+5` | all roles |
+
+---
+
+## Recording pipeline
+
+```
+MonitorDetectionService
+  → one MonitorWorker per physical screen
+       → FFmpegRecorderAdapter  (gdigrab → MPEG-TS segments + preview.jpg)
+       → BufferManager           (rolling retention, prunes old segments)
+       → HourlyRecordingBuilder  (assembles rolling hourly raw clips)
+
+EventService.trigger_manual_event()
+  → ClipBuilder.build_clip()
+       → FFmpegTrimAdapter       (trims pre/post from segments)
+       → FFmpegTimestampAdapter  (burns timestamp into final clip)
+  → CombinedClipBuilder          (grid layout of all selected monitors)
+```
+
+### Output directories
+
+```
+WatcherData/
+  clips/       ← combined multi-monitor MP4 (timestamp overlay)
+  clips_raw/   ← per-monitor raw clips (one file per screen per hour)
+  segments/    ← rolling TS segments (auto-pruned, never committed)
+    m0/        ← monitor 0 segments + preview.jpg
+    m1/        ← monitor 1 segments + preview.jpg
+```
+
+---
+
+## Startup sequence
+
+```
+1. Acquire single-instance mutex (prevents duplicate instances)
+2. Load settings (.env) + user config (user_config.json)
+3. Enforce role (autorecord forced on for operator/IT)
+4. Auto-detect hardware encoder (NVENC / QuickSync / AMF / CPU)
+5. MonitorDetectionService.detect_now()
+6. Build one MonitorWorker per detected screen (skipped for supervisor)
+7. RecordingService.start() (if autorecord=true)
+8. RecordingHealthService.start() + DiskSpaceMonitor.start()
+9. QApplication + QQmlApplicationEngine
+10. AppBridge + SettingsBridge registered as QML context properties
+11. Main.qml loaded
+12. WebSocket server (IT) or client (Supervisor) started
+13. TrayIcon created
+```
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` and adjust:
+
+```env
+# Role: operator | it | supervisor
+USER_ROLE=operator
+
+# Recording
+SEGMENT_DURATION=10
+RETENTION_HOURS=2
+CAPTURE_FRAMERATE=30
+OUTPUT_WIDTH=1920
+OUTPUT_HEIGHT=1080
+VIDEO_CODEC=hevc_nvenc   # or hevc_qsv / hevc_amf / libx265
+
+# Event clip
+EVENT_PRE_SECONDS=120
+EVENT_POST_SECONDS=120
+EVENT_COOLDOWN_SECONDS=30
+
+# Storage
+SEGMENT_DIR=C:/WatcherData/segments
+CLIPS_DIR=C:/WatcherData/clips
+
+# IT / Supervisor
+IT_WS_PORT=9000
+IT_WS_HOSTS=192.168.1.10,192.168.1.11
+SLC_STORAGE_HOST=\\SIG-SLC-Storage
+
+# NAS credentials (optional — for UNC share access)
+NAS_USERNAME=
+NAS_PASSWORD=
+```
+
+---
+
+## Build & Install
+
+Requirements: Python 3.13, FFmpeg installed via winget (`Gyan.FFmpeg`), project venv set up.
 
 ```powershell
 # From project/ directory:
@@ -727,19 +302,40 @@ Requirements: Python 3.13, FFmpeg installed via winget (Gyan.FFmpeg), project ve
 
 **Output:**
 - `dist\The Watcher\The Watcher.exe` — standalone executable
-- `dist\The Watcher-<version>.zip` — distributable package (version comes from `app/__init__.py`)
+- `dist\The Watcher-<version>.zip` — distributable package (version from `app/__init__.py`)
 
 **Install on target machine:**
 ```powershell
-# Extract "The Watcher-<version>.zip", then either double-click Setup.bat or:
+# Extract the zip, then:
 .\install.ps1
 ```
 
-The installer copies the app to `%LOCALAPPDATA%\The Watcher` and optionally enables auto-start at login. No desktop shortcut is created.
+Installs to `%LOCALAPPDATA%\The Watcher`. Optionally enables auto-start at Windows login. No desktop shortcut.
 
 **Build notes:**
 - `build.ps1` creates a clean venv at `C:\TW_Venv` and a junction at `C:\TW_Build` to work around a PyInstaller/PySide6 bug where `QLibraryInfo.path()` mis-parses plugin paths when the venv path contains a comma.
-- The clean venv is reused on subsequent builds; only delete `C:\TW_Venv` to force a full reinstall.
+- Delete `C:\TW_Venv` to force a full dependency reinstall on the next build.
+
+---
+
+## Milestone Status
+
+| Milestone | Description | Status |
+|---|---|---|
+| M0 | Project bootstrap (venv, structure, logging) | Done |
+| M1 | FFmpeg gdigrab recorder adapter | Done |
+| M2 | Segment index + buffer manager | Done |
+| M3 | Clip builder (trim + concat) | Done |
+| M4 | Event service + cooldown logic | Done |
+| M5 | PySide6 QML operator UI (AppBridge, tab layout) | Done |
+| Monitor | Multi-monitor support + hot-plug detection | Done |
+| M6 | Reliability & hardening (supervisor, disk monitor, health checks) | Done |
+| M7 | Performance optimization (hardware encoder selector, embedded preview) | Done |
+| M8 | Packaging & deployment (PyInstaller, installer scripts) | Done |
+| M9 | Role system (operator / IT / supervisor) | Done |
+| M10 | Clip request system (WebSocket IT↔Supervisor, outbox/inbox UI) | Done |
+| M11 | Clip browser with UNC/NAS support | Done |
+| M12 | Combined multi-monitor grid clip + hourly rolling raw clips | Done |
 
 ---
 
