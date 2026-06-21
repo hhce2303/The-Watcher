@@ -1029,7 +1029,7 @@ Item {
                 label: "Servidor NAS"
                 helper: "Host del storage compartido (SLC_STORAGE_HOST en .env). Solo lectura."
                 Text {
-                    text: "\\\\SIG-SLC-Storage"
+                    text: SettingsBridge.slcStorageHost
                     color: W.Tokens.textMuted
                     font.family: W.Tokens.mono
                     font.pixelSize: 14

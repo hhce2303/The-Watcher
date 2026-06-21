@@ -41,6 +41,10 @@ Item {
 
     property string selectedRole: ""
 
+    // True once a role has been confirmed: the app persists it and relaunches
+    // to re-wire the backend, so we show a brief "reiniciando" cover meanwhile.
+    property bool configuring: false
+
     // ── Background ────────────────────────────────────────────────────
     Rectangle {
         anchors.fill: parent
@@ -195,8 +199,11 @@ Item {
 
             HoverHandler { id: confirmHvr }
             TapHandler {
-                enabled: root.selectedRole !== ""
-                onTapped: SettingsBridge.setRole(root.selectedRole)
+                enabled: root.selectedRole !== "" && !root.configuring
+                onTapped: {
+                    root.configuring = true
+                    SettingsBridge.setRole(root.selectedRole)
+                }
             }
 
             Text {
@@ -212,5 +219,43 @@ Item {
         }
 
         Item { Layout.preferredHeight: 20 }
+    }
+
+    // ── Configuring / relaunching cover ───────────────────────────────
+    // Covers the wizard after a role is confirmed so the relaunch reads as a
+    // deliberate "applying" step, not an abrupt close.  Blocks all input.
+    Rectangle {
+        anchors.fill: parent
+        visible: root.configuring
+        color: W.Tokens.bgBase
+        z: 100
+
+        // Swallow clicks/taps while configuring.
+        MouseArea { anchors.fill: parent }
+
+        ColumnLayout {
+            anchors.centerIn: parent
+            spacing: 18
+
+            BusyIndicator {
+                Layout.alignment: Qt.AlignHCenter
+                running: root.configuring
+            }
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: "Configurando este equipo…"
+                color: W.Tokens.textPrimary
+                font.family: W.Tokens.sans
+                font.pixelSize: 17
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: "Reiniciando para aplicar el rol"
+                color: W.Tokens.textDim
+                font.family: W.Tokens.sans
+                font.pixelSize: 13
+            }
+        }
     }
 }

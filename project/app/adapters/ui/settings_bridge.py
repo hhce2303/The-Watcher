@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.adapters.ffmpeg import encoder_selector
 from app.core.ports.user_config_port import UserConfigPort
-from app.core.role import IT, VALID_ROLES
+from app.core.role import IT, VALID_ROLES, default_autorecord_for_role
 from app.infrastructure import autostart
 from app.infrastructure.config import Settings
 
@@ -78,6 +78,8 @@ class SettingsBridge(QObject):
         self._it_unlocked: bool = False
         self._restart_state: str = _RESTART_IDLE
         self._restart_cb: Optional[Callable[[str, str], None]] = None
+        self._relaunch_cb: Optional[Callable[[], None]] = None
+        self._autorecord_cb: Optional[Callable[[bool], None]] = None
         self._it_ws_port_status: str = "unknown"  # unknown | open | closed | opening | error
 
     def set_restart_callback(self, callback: Callable[[str, str], None]) -> None:
@@ -87,6 +89,24 @@ class SettingsBridge(QObject):
         Called in a background thread — must be thread-safe and not touch Qt directly.
         """
         self._restart_cb = callback
+
+    def set_relaunch_callback(self, callback: Callable[[], None]) -> None:
+        """Register the process-relaunch function from main.py.
+
+        Invoked from ``setRole`` after a role change is persisted.  main()
+        re-runs in a fresh process so the backend re-wires for the new role.
+        Called on the Qt main thread.
+        """
+        self._relaunch_cb = callback
+
+    def set_autorecord_callback(self, callback: Callable[[bool], None]) -> None:
+        """Register the live autorecord start/stop function from main.py.
+
+        Signature: ``callback(enabled: bool) -> None``.  Lets IT turn recording
+        on/off without a restart (the stack is already built, just parked).
+        Called on the Qt main thread.
+        """
+        self._autorecord_cb = callback
 
     # ── Read-only Settings (from .env) ────────────────────────────────
 
@@ -101,6 +121,23 @@ class SettingsBridge(QObject):
     @Property(str, notify=encoderInfoChanged)
     def outputResolution(self) -> str:
         return f'{self._settings.output_width}×{self._settings.output_height}'
+
+    @Property(int, notify=encoderInfoChanged)
+    def outputWidth(self) -> int:
+        return self._settings.output_width
+
+    @Property(int, notify=encoderInfoChanged)
+    def outputHeight(self) -> int:
+        return self._settings.output_height
+
+    @Property(str, notify=encoderInfoChanged)
+    def slcStorageHost(self) -> str:
+        """UNC root of the shared NAS (SLC_STORAGE_HOST in .env).
+
+        Single source of truth for QML browsers — no hardcoded ``\\\\server``
+        literals in the .qml files.
+        """
+        return self._settings.slc_storage_host
 
     @Property(int, notify=encoderInfoChanged)
     def segmentDuration(self) -> int:
@@ -227,17 +264,24 @@ class SettingsBridge(QObject):
         self._autorecord = enabled
         self._persist(lambda c: setattr(c, "autorecord", enabled))
         self.systemChanged.emit()
+        # Apply live (IT): start/stop the already-built recording stack.
+        if self._autorecord_cb is not None:
+            self._autorecord_cb(enabled)
 
     # ── Role slots ────────────────────────────────────────────────────
 
     @Slot(str)
     def setRole(self, role: str) -> None:
-        """Persist a role change.
+        """Persist a role change and relaunch to apply it.
 
         Allowed when:
         - role == "" (first-run wizard — no existing role set)
         - current role == IT
         - isITUnlocked (PIN was verified this session)
+
+        Persists both the role and the role's default ``autorecord`` (operator
+        on, IT/supervisor off) in one write, then asks main() to relaunch the
+        process so the backend re-wires for the new role.
         """
         role = (role or "").lower()
         if role not in VALID_ROLES:
@@ -249,9 +293,23 @@ class SettingsBridge(QObject):
         if role == self._role:
             return
         self._role = role
-        self._persist(lambda c: setattr(c, "role", role))
-        logger.info("Role set to '{}'.", role)
+        autorecord = default_autorecord_for_role(role)
+        self._autorecord = autorecord
+
+        def _mutate(c) -> None:
+            c.role = role
+            c.autorecord = autorecord
+
+        self._persist(_mutate)
+        logger.info("Role set to '{}' (autorecord default={}).", role, autorecord)
         self.roleChanged.emit()
+        self.systemChanged.emit()  # autorecord property may have changed
+
+        # Re-wire the backend by relaunching with the new role.
+        if self._relaunch_cb is not None:
+            self._relaunch_cb()
+        else:
+            logger.warning("setRole: no relaunch callback registered — backend not re-wired.")
 
     @Slot(str, result=bool)
     def unlockIT(self, pin: str) -> bool:

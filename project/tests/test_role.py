@@ -60,12 +60,13 @@ class TestEnforceRole:
         enforce_role("it", cfg, auto)
         auto.set_autostart.assert_not_called()
 
-    def test_empty_role_is_no_op(self):
+    def test_empty_role_disables_autorecord(self):
+        # Unconfigured machine must never record until the role wizard runs.
         from app.core.role import enforce_role
         cfg = self._make_config(autorecord=True, role="")
         auto = self._fake_autostart()
         enforce_role("", cfg, auto)
-        assert cfg.autorecord is True
+        assert cfg.autorecord is False
         auto.set_autostart.assert_not_called()
 
 
@@ -90,6 +91,41 @@ class TestRoleHelpers:
         assert SUPERVISOR in VALID_ROLES
         assert IT in VALID_ROLES
         assert "" not in VALID_ROLES
+
+
+# ── recording gates ────────────────────────────────────────────────────────────
+
+class TestRecordingGates:
+    """Pure helpers that decide whether a machine builds/starts recording."""
+
+    def test_is_recording_role(self):
+        from app.core.role import is_recording_role
+        assert is_recording_role("operator") is True
+        assert is_recording_role("it") is True
+        assert is_recording_role("supervisor") is False
+        assert is_recording_role("") is False
+
+    def test_default_autorecord_for_role(self):
+        from app.core.role import default_autorecord_for_role
+        assert default_autorecord_for_role("operator") is True
+        assert default_autorecord_for_role("it") is False
+        assert default_autorecord_for_role("supervisor") is False
+        assert default_autorecord_for_role("") is False
+
+    def test_should_autorecord_operator_always(self):
+        from app.core.role import should_autorecord_on_launch
+        assert should_autorecord_on_launch("operator", True) is True
+        assert should_autorecord_on_launch("operator", False) is True
+
+    def test_should_autorecord_it_honours_toggle(self):
+        from app.core.role import should_autorecord_on_launch
+        assert should_autorecord_on_launch("it", True) is True
+        assert should_autorecord_on_launch("it", False) is False
+
+    def test_should_autorecord_never_for_supervisor_or_unconfigured(self):
+        from app.core.role import should_autorecord_on_launch
+        assert should_autorecord_on_launch("supervisor", True) is False
+        assert should_autorecord_on_launch("", True) is False
 
 
 # ── SettingsBridge PIN ────────────────────────────────────────────────────────
@@ -131,6 +167,8 @@ class TestSettingsBridgePin:
         bridge._it_unlocked = False
         bridge._restart_state = "idle"
         bridge._restart_cb = None
+        bridge._relaunch_cb = None
+        bridge._autorecord_cb = None
         return bridge
 
     def test_correct_pin_unlocks(self):
@@ -159,6 +197,7 @@ class TestSettingsBridgePin:
         bridge._role = "operator"
         bridge._it_unlocked = True
         with patch.object(bridge, "roleChanged"), \
+             patch.object(bridge, "systemChanged"), \
              patch.object(bridge, "_persist"):
             bridge.setRole("it")
         assert bridge._role == "it"
@@ -168,6 +207,7 @@ class TestSettingsBridgePin:
         bridge._role = ""
         bridge._it_unlocked = False
         with patch.object(bridge, "roleChanged"), \
+             patch.object(bridge, "systemChanged"), \
              patch.object(bridge, "_persist"):
             bridge.setRole("supervisor")
         assert bridge._role == "supervisor"
@@ -176,6 +216,50 @@ class TestSettingsBridgePin:
         bridge = self._make_bridge()
         bridge._role = "it"
         with patch.object(bridge, "roleChanged"), \
+             patch.object(bridge, "systemChanged"), \
              patch.object(bridge, "_persist"):
             bridge.setRole("admin")
         assert bridge._role == "it"
+
+    def test_set_role_initializes_autorecord_default(self):
+        # First-run IT → autorecord off (opt-in); first-run operator → on.
+        for role, expected in (("it", False), ("operator", True), ("supervisor", False)):
+            bridge = self._make_bridge()
+            bridge._role = ""
+            bridge._autorecord = True
+            with patch.object(bridge, "roleChanged"), \
+                 patch.object(bridge, "systemChanged"), \
+                 patch.object(bridge, "_persist"):
+                bridge.setRole(role)
+            assert bridge._role == role
+            assert bridge._autorecord is expected
+
+    def test_set_role_triggers_relaunch(self):
+        bridge = self._make_bridge()
+        bridge._role = ""
+        bridge._relaunch_cb = MagicMock()
+        with patch.object(bridge, "roleChanged"), \
+             patch.object(bridge, "systemChanged"), \
+             patch.object(bridge, "_persist"):
+            bridge.setRole("operator")
+        bridge._relaunch_cb.assert_called_once_with()
+
+    def test_set_role_no_relaunch_when_unchanged(self):
+        bridge = self._make_bridge()
+        bridge._role = "operator"
+        bridge._relaunch_cb = MagicMock()
+        with patch.object(bridge, "roleChanged"), \
+             patch.object(bridge, "systemChanged"), \
+             patch.object(bridge, "_persist"):
+            bridge.setRole("operator")
+        bridge._relaunch_cb.assert_not_called()
+
+    def test_set_autorecord_invokes_callback(self):
+        bridge = self._make_bridge()
+        bridge._autorecord = False
+        bridge._autorecord_cb = MagicMock()
+        with patch.object(bridge, "systemChanged"), \
+             patch.object(bridge, "_persist"):
+            bridge.setAutorecord(True)
+        assert bridge._autorecord is True
+        bridge._autorecord_cb.assert_called_once_with(True)

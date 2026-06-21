@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtMultimedia
 import "." as W
 
 // VideoEditor.qml — video editor workspace: preview + transport + timeline.
@@ -22,40 +23,80 @@ import "." as W
 Rectangle {
     id: root
 
-    property string fileName: "14-02-11_event.mp4"
-    property int    duration: 983
-    property bool   playing: false
-    property real   playhead: 0.32
-    property real   inMark:  0.12
-    property real   outMark: 0.83
+    property string fileName: ""
+    // Real clip metadata from AppBridge.currentClipInfo (ffprobe):
+    // { resolution, codec, fps, bitrate, durationSeconds }. Empty {} → "—".
+    property var    clipInfo: ({})
+    // Media source URL (AppBridge.mediaUrl(currentClipPath)); "" → placeholder.
+    property url    source: ""
 
-    signal toggled()
-    signal scrubbed(real f)
-    signal markedIn(real f)
-    signal markedOut(real f)
+    // Playback state is OWNED by the MediaPlayer (real position/duration), not
+    // driven externally. Marks are editable fractions (0..1 of duration).
+    readonly property real duration:
+        player.duration > 0 ? player.duration / 1000
+                            : ((clipInfo && clipInfo.durationSeconds) ? clipInfo.durationSeconds : 0)
+    readonly property bool playing:  player.playbackState === MediaPlayer.PlayingState
+    readonly property real playhead: player.duration > 0 ? player.position / player.duration : 0
+    property real inMark:  0.0
+    property real outMark: 1.0
+
+    // Timeline zoom + frame stepping.
+    property real zoom: 1.0
+    readonly property int fps:
+        (clipInfo && clipInfo.fps && parseFloat(clipInfo.fps) > 0) ? Math.round(parseFloat(clipInfo.fps)) : 30
+    readonly property int tickCount: Math.max(8, Math.round(8 * zoom))
+
+    // ── Transport — operate the REAL player ────────────────────────────────
+    function togglePlay() {
+        if (root.source == "") return
+        if (player.playbackState === MediaPlayer.PlayingState) player.pause()
+        else player.play()
+    }
+    function seekFraction(f) {
+        if (player.duration > 0)
+            player.position = Math.max(0, Math.min(1, f)) * player.duration
+    }
+    function frameStep(dir) {
+        if (player.duration <= 0) return
+        player.pause()
+        var stepMs = 1000.0 / Math.max(1, root.fps)
+        player.position = Math.max(0, Math.min(player.duration, player.position + dir * stepMs))
+    }
+    function markIn()  { root.inMark  = root.playhead; if (root.outMark < root.inMark) root.outMark = 1.0 }
+    function markOut() { root.outMark = root.playhead; if (root.inMark > root.outMark) root.inMark = 0.0 }
+
+    function setZoom(z) { root.zoom = Math.max(1, Math.min(8, z)) }
+
+    // Recenter the timeline viewport on the playhead when zoom changes.
+    onZoomChanged: {
+        var cw = tlFlick.width * root.zoom
+        tlFlick.contentX = Math.max(0, Math.min(cw - tlFlick.width,
+                                    root.playhead * cw - tlFlick.width / 2))
+    }
 
     color: W.Tokens.bgBase
 
-    // Event markers (positions are 0..1 along the timeline)
-    readonly property var events: [
-        { at: 0.04, label: "load",        tone: "ok"   },
-        { at: 0.18, label: "401 inicial", tone: "warn" },
-        { at: 0.31, label: "401",         tone: "warn" },
-        { at: 0.46, label: "500",         tone: "rec"  },
-        { at: 0.58, label: "401 burst",   tone: "warn" },
-        { at: 0.81, label: "reconnect",   tone: "ok"   },
-    ]
-    function toneColor(t) {
-        if (t === "rec")  return W.Tokens.accentRecord
-        if (t === "warn") return W.Tokens.accentYellow
-        return W.Tokens.accentOk
+    // The real media player (Qt FFmpeg backend). Nothing plays until a source
+    // is set and play() is called. Pauses at the OUT mark while previewing.
+    MediaPlayer {
+        id: player
+        source: root.source
+        videoOutput: videoOut
+        audioOutput: AudioOutput { id: audioOut }
+        onPositionChanged: {
+            if (playbackState === MediaPlayer.PlayingState
+                && root.outMark < 1.0 && duration > 0
+                && position >= root.outMark * duration) {
+                pause()
+            }
+        }
     }
 
     function fmt(f) {
         var total = f * root.duration
         var mm = Math.floor(total / 60)
         var ss = Math.floor(total % 60)
-        var ff = Math.floor((total - Math.floor(total)) * 24)
+        var ff = Math.floor((total - Math.floor(total)) * root.fps)
         return String(mm).padStart(2, "0") + ":"
              + String(ss).padStart(2, "0") + ":"
              + String(ff).padStart(2, "0")
@@ -112,7 +153,15 @@ Rectangle {
                     border.color: W.Tokens.borderBase; border.width: 1
                     Text {
                         id: metaTxt; anchors.centerIn: parent
-                        text: "1920×1080 · 24FPS · H.264"
+                        // Honest metadata: real ffprobe values, "—" for any missing field.
+                        text: {
+                            var ci  = root.clipInfo || {}
+                            var res = ci.resolution ? ci.resolution : "—"
+                            var fps = ci.fps ? (ci.fps + "FPS") : "—"
+                            var cod = ci.codec ? ("" + ci.codec).toUpperCase() : "—"
+                            var br  = ci.bitrate ? ("  ·  " + ci.bitrate) : ""
+                            return res + " · " + fps + " · " + cod + br
+                        }
                         color: W.Tokens.textMuted
                         font.family: W.Tokens.mono
                         font.pixelSize: 11; font.weight: Font.Bold; font.letterSpacing: 0.8
@@ -177,9 +226,18 @@ Rectangle {
                     radius: W.Tokens.rMd
                     clip: true
 
+                    // Real video frames (Qt FFmpeg backend), letterboxed to 16:9.
+                    VideoOutput {
+                        id: videoOut
+                        anchors.fill: parent
+                        fillMode: VideoOutput.PreserveAspectFit
+                        visible: root.source != ""
+                    }
+
                     // Diagonal stripes pattern with lower opacity
                     Canvas {
                         id: stripes
+                        visible: root.source == ""
                         anchors.fill: parent
                         opacity: 0.5
                         onPaint: {
@@ -200,6 +258,7 @@ Rectangle {
 
                     // Radial vignette deeper and more polished
                     Canvas {
+                        visible: root.source == ""
                         anchors.fill: parent
                         onPaint: {
                             var ctx = getContext("2d")
@@ -224,28 +283,29 @@ Rectangle {
                         radius: W.Tokens.rMd
                     }
 
-                    // Center info
+                    // Placeholder (only when no clip is loaded)
                     ColumnLayout {
+                        visible: root.source == ""
                         anchors.centerIn: parent
                         spacing: 12
                         Text { text: "▦"; color: Qt.rgba(255, 255, 255, 0.15)
                                font.pixelSize: 44
                                Layout.alignment: Qt.AlignHCenter }
-                        Text { text: "VIDEO PREVIEW"
+                        Text { text: "SIN CLIP CARGADO"
                                color: W.Tokens.textMuted
                                font.family: W.Tokens.mono
                                font.pixelSize: 13; font.letterSpacing: 2.0; font.weight: Font.DemiBold
                                Layout.alignment: Qt.AlignHCenter }
-                        Text { text: Math.round(root.playhead * root.duration)
-                                    + "s / " + root.duration + "s"
+                        Text { text: "Selecciona un archivo y pulsa «Cargar para editar»"
                                color: W.Tokens.textDim
                                font.family: W.Tokens.mono
-                               font.pixelSize: 12; font.letterSpacing: 1.0
+                               font.pixelSize: 12; font.letterSpacing: 0.6
                                Layout.alignment: Qt.AlignHCenter }
                     }
 
                     // HUD top-left: timecode
                     Rectangle {
+                        visible: root.source != ""
                         anchors { top: parent.top; left: parent.left; margins: 12 }
                         height: 24; width: timecodeLayout.implicitWidth + 16
                         color: Qt.rgba(0, 0, 0, 0.6)
@@ -271,6 +331,7 @@ Rectangle {
 
                     // HUD top-right: frame
                     Rectangle {
+                        visible: root.source != ""
                         anchors { top: parent.top; right: parent.right; margins: 12 }
                         height: 24; width: frameTxt.implicitWidth + 16
                         color: Qt.rgba(0, 0, 0, 0.6)
@@ -279,40 +340,10 @@ Rectangle {
                         Text {
                             id: frameTxt
                             anchors.centerIn: parent
-                            text: "FRAME " + Math.floor(root.playhead * root.duration * 24)
+                            text: "FRAME " + Math.floor(root.playhead * root.duration * root.fps)
                             color: W.Tokens.textMuted
                             font.family: W.Tokens.mono
                             font.pixelSize: 11; font.letterSpacing: 1.0; font.weight: Font.DemiBold
-                        }
-                    }
-
-                    // HUD bottom-left: chips
-                    Row {
-                        anchors { bottom: parent.bottom; left: parent.left; margins: 12 }
-                        spacing: 6
-                        Rectangle {
-                            height: 20; width: opCh.implicitWidth + 12
-                            radius: W.Tokens.rSm
-                            color: Qt.rgba(0, 0, 0, 0.7)
-                            border.color: Qt.rgba(255, 255, 255, 0.15); border.width: 1
-                            Text { id: opCh; anchors.centerIn: parent
-                                   text: "OP-28"; color: W.Tokens.textPrimary
-                                   font.family: W.Tokens.mono
-                                   font.pixelSize: 11; font.weight: Font.Bold; font.letterSpacing: 1.0 }
-                        }
-                        Rectangle {
-                            height: 20; width: evCh.implicitWidth + 12
-                            radius: W.Tokens.rSm
-                            color: Qt.rgba(0, 0, 0, 0.7)
-                            border.color: Qt.rgba(W.Tokens.accentYellow.r,
-                                                  W.Tokens.accentYellow.g,
-                                                  W.Tokens.accentYellow.b, 0.50)
-                            border.width: 1
-                            Text { id: evCh; anchors.centerIn: parent
-                                   text: "EVT · auth error"
-                                   color: W.Tokens.accentYellow
-                                   font.family: W.Tokens.mono
-                                   font.pixelSize: 11; font.weight: Font.Bold; font.letterSpacing: 1.0 }
                         }
                     }
                 }
@@ -326,20 +357,32 @@ Rectangle {
             Layout.topMargin: 10
             spacing: 8
 
-            TransportBtn { glyph: "[ ◀"; tip: "Mark IN"
-                onClicked: root.markedIn(root.playhead) }
-            TransportBtn { glyph: "◂"; onClicked: {} }
+            TransportBtn { glyph: "[ ◀"; tip: "Marca IN"
+                onClicked: root.markIn() }
+            TransportBtn { glyph: "◂"; tip: "Frame anterior"; onClicked: root.frameStep(-1) }
             TransportBtn {
                 glyph: root.playing ? "❚❚" : "▶"
                 primary: true
-                onClicked: root.toggled()
+                onClicked: root.togglePlay()
             }
-            TransportBtn { glyph: "▸"; onClicked: {} }
-            TransportBtn { glyph: "▶ ]"; tip: "Mark OUT"
-                onClicked: root.markedOut(root.playhead) }
+            TransportBtn { glyph: "▸"; tip: "Frame siguiente"; onClicked: root.frameStep(1) }
+            TransportBtn { glyph: "▶ ]"; tip: "Marca OUT"
+                onClicked: root.markOut() }
             Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 18
                         color: W.Tokens.borderBase; Layout.leftMargin: 4 }
-            TransportBtn { glyph: "✂"; tip: "Cut"; onClicked: {} }
+
+            // Zoom de la línea de tiempo
+            TransportBtn { glyph: "−"; tip: "Alejar"; onClicked: root.setZoom(root.zoom / 1.5) }
+            Text {
+                text: Math.round(root.zoom * 100) + "%"
+                color: W.Tokens.textMuted
+                font.family: W.Tokens.mono; font.pixelSize: 12; font.weight: Font.Bold
+                Layout.alignment: Qt.AlignVCenter
+                Layout.minimumWidth: 44
+                horizontalAlignment: Text.AlignHCenter
+            }
+            TransportBtn { glyph: "+"; tip: "Acercar"; onClicked: root.setZoom(root.zoom * 1.5) }
+            TransportBtn { glyph: "⤢"; tip: "Ajustar"; onClicked: root.setZoom(1) }
 
             Item { Layout.fillWidth: true }
 
@@ -369,24 +412,37 @@ Rectangle {
             }
         }
 
-        // ── Ruler ─────────────────────────────────────────────────────
+        // ── Ruler (zoom-aware, synced to the timeline viewport) ────────
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 16
             Layout.leftMargin: 18; Layout.rightMargin: 18
             Layout.topMargin: 8
-            Repeater {
-                model: 9
-                delegate: ColumnLayout {
-                    x: (parent.width / 8) * index - implicitWidth / 2
-                    spacing: 2
-                    Rectangle { width: 1; height: 4; color: W.Tokens.borderSubtle
-                                Layout.alignment: Qt.AlignHCenter }
-                    Text {
-                        text: root.fmt(index / 8).substring(0, 5)
-                        color: W.Tokens.textDim
-                        font.family: W.Tokens.mono
-                        font.pixelSize: 10; font.letterSpacing: 0.4
+            Flickable {
+                id: rulerFlick
+                anchors.fill: parent
+                interactive: false
+                clip: true
+                contentWidth: Math.max(width, width * root.zoom)
+                contentHeight: height
+                contentX: tlFlick.contentX
+                Item {
+                    width: rulerFlick.contentWidth
+                    height: rulerFlick.height
+                    Repeater {
+                        model: root.tickCount + 1
+                        delegate: ColumnLayout {
+                            x: (parent.width / root.tickCount) * index - implicitWidth / 2
+                            spacing: 2
+                            Rectangle { width: 1; height: 4; color: W.Tokens.borderSubtle
+                                        Layout.alignment: Qt.AlignHCenter }
+                            Text {
+                                text: root.fmt(index / root.tickCount).substring(0, 5)
+                                color: W.Tokens.textDim
+                                font.family: W.Tokens.mono
+                                font.pixelSize: 10; font.letterSpacing: 0.4
+                            }
+                        }
                     }
                 }
             }
@@ -400,9 +456,18 @@ Rectangle {
             Layout.leftMargin: 18; Layout.rightMargin: 18
             Layout.topMargin: 2
 
+            Flickable {
+                id: tlFlick
+                anchors.fill: parent
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                contentWidth: Math.max(width, width * root.zoom)
+                contentHeight: height
+
             Rectangle {
                 id: trackBg
-                anchors.fill: parent
+                width: tlFlick.contentWidth
+                height: tlFlick.height
                 color: W.Tokens.bgElevated
                 border.color: W.Tokens.borderBase; border.width: 1
                 radius: W.Tokens.rSm
@@ -428,34 +493,14 @@ Rectangle {
                                    W.Tokens.accentPrimary.b, 0.12)
                 }
 
-                // Waveform (procedural)
-                Row {
-                    anchors { fill: parent; topMargin: 6; bottomMargin: 6
-                              leftMargin: 4; rightMargin: 4 }
-                    spacing: 2
-                    Repeater {
-                        model: 120
-                        delegate: Rectangle {
-                            property real v: {
-                                var a = Math.sin(index * 0.22) * 0.5
-                                var b = Math.sin(index * 0.08 + 1) * 0.3
-                                var c = Math.sin(index * 0.55) * 0.2
-                                return Math.max(0.05, 0.4 + a + b + c)
-                            }
-                            property bool inSelection: {
-                                var pos = (index + 0.5) / 120
-                                return pos >= root.inMark && pos <= root.outMark
-                            }
-                            width: (track.width - 8) / 120 - 2
-                            height: parent.height * v * 0.85
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: inSelection ? W.Tokens.accentPrimary : W.Tokens.accentMonitor
-                            opacity: inSelection ? 0.9 : 0.3
-                            radius: width / 2
-                            Behavior on color { ColorAnimation { duration: W.Tokens.durFast } }
-                            Behavior on opacity { NumberAnimation { duration: W.Tokens.durFast } }
-                        }
-                    }
+                // Played progress — real position fill (0 → playhead).
+                Rectangle {
+                    anchors.top: parent.top; anchors.bottom: parent.bottom
+                    anchors.margins: 1
+                    x: 1
+                    width: Math.max(0, root.playhead * (trackBg.width - 2))
+                    color: Qt.rgba(W.Tokens.accentMonitor.r, W.Tokens.accentMonitor.g,
+                                   W.Tokens.accentMonitor.b, 0.16)
                 }
 
                 // Selected range borders (In/Out markers)
@@ -474,27 +519,6 @@ Rectangle {
                     color: W.Tokens.accentPrimary
                     Rectangle { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter
                                 width: 8; height: 8; radius: 2; color: W.Tokens.accentPrimary }
-                }
-
-                // Event markers
-                Repeater {
-                    model: root.events
-                    delegate: Rectangle {
-                        anchors { top: parent.top; bottom: parent.bottom }
-                        x: modelData.at * parent.width - 1
-                        width: 2
-                        color: root.toneColor(modelData.tone)
-                        opacity: 0.85
-                        Rectangle {
-                            anchors.centerIn: parent
-                            width: 8; height: parent.height
-                            color: "transparent"
-                            border.color: root.toneColor(modelData.tone)
-                            border.width: 1
-                            opacity: 0.25
-                            radius: 2
-                        }
-                    }
                 }
 
                 // Playhead
@@ -528,36 +552,31 @@ Rectangle {
                 TapHandler {
                     onTapped: {
                         var f = Math.max(0, Math.min(1, point.position.x / trackBg.width))
-                        root.scrubbed(f)
+                        root.seekFraction(f)
                     }
                 }
             }
+            }
         }
 
-        // ── Event legend ──────────────────────────────────────────────
+        // ── Hint bar ──────────────────────────────────────────────────
         RowLayout {
             Layout.fillWidth: true
             Layout.leftMargin: 18; Layout.rightMargin: 18
             Layout.topMargin: 6; Layout.bottomMargin: 12
             spacing: 14
-            Text { text: "EVENTOS:"; color: W.Tokens.textDim
-                   font.family: W.Tokens.mono
-                   font.pixelSize: 11; font.letterSpacing: 1.2 }
-            Repeater {
-                model: root.events
-                delegate: RowLayout {
-                    spacing: 5
-                    Rectangle { width: 4; height: 4; radius: 2
-                                color: root.toneColor(modelData.tone)
-                                Layout.alignment: Qt.AlignVCenter }
-                    Text { text: modelData.label
-                           color: W.Tokens.textMuted
-                           font.family: W.Tokens.mono
-                           font.pixelSize: 11; font.letterSpacing: 0.4 }
-                }
+            Text {
+                text: root.clipInfo && root.clipInfo.codec
+                      ? (("" + root.clipInfo.codec).toUpperCase()
+                         + (root.clipInfo.resolution ? "  ·  " + root.clipInfo.resolution : "")
+                         + "  ·  " + root.fps + " FPS")
+                      : ""
+                color: W.Tokens.textDim
+                font.family: W.Tokens.mono
+                font.pixelSize: 11; font.letterSpacing: 0.6
             }
             Item { Layout.fillWidth: true }
-            Text { text: "ESPACIO · play/pause   I/O · marcas"
+            Text { text: "ESPACIO · play/pause   ◂ ▸ · frame   I/O · marcas"
                    color: W.Tokens.textDim
                    font.family: W.Tokens.mono
                    font.pixelSize: 11; font.letterSpacing: 0.4 }

@@ -5,6 +5,42 @@ SUPERVISOR = "supervisor"
 IT        = "it"
 VALID_ROLES = {OPERATOR, SUPERVISOR, IT}
 
+# Roles whose machines build the recording stack.  Supervisor never records;
+# an unconfigured machine ("") stays inert until the role wizard sets a role.
+RECORDING_ROLES = {OPERATOR, IT}
+
+
+def is_recording_role(role: str) -> bool:
+    """True if this role's machine builds the recording stack at all.
+
+    Operator and IT can record; Supervisor and the unconfigured "" state never
+    build recorders, so a freshly deployed machine launches inert (tray + role
+    wizard, zero FFmpeg) until a role is chosen.
+    """
+    return role in RECORDING_ROLES
+
+
+def default_autorecord_for_role(role: str) -> bool:
+    """The autorecord value to persist when a machine is first configured.
+
+    Operator is an always-on recorder (True).  IT records only when explicitly
+    enabled (False — opt-in from Settings).  Supervisor and "" never record.
+    """
+    return role == OPERATOR
+
+
+def should_autorecord_on_launch(role: str, autorecord: bool) -> bool:
+    """Whether to start recording at launch for this role + persisted toggle.
+
+    Operator always records; IT honours its persisted ``autorecord`` toggle;
+    Supervisor and the unconfigured "" state never start recording.
+    """
+    if role == OPERATOR:
+        return True
+    if role == IT:
+        return autorecord
+    return False
+
 
 def role_label(role: str) -> str:
     return {
@@ -50,4 +86,7 @@ def enforce_role(
         autostart_module.set_autostart(True)
     elif role == SUPERVISOR:
         user_config.autorecord = False
-    # IT: no constraints — full access
+    elif role == "":
+        # Unconfigured machine: never record until the role wizard runs.
+        user_config.autorecord = False
+    # IT: no constraints — honours the persisted autorecord toggle.

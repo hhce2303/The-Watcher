@@ -20,20 +20,74 @@ Item {
 
     // Emitted when the user activates a video file (double-click or Play button)
     signal playRequested(string path)
+    // Emitted when the selection changes to a (non-directory) file — lets a
+    // host view (e.g. the IT editor) track the pick without triggering play.
+    signal fileSelected(string path)
 
     // ── State ─────────────────────────────────────────────────────────
     property var navStack:      []   // [{label:string, path:string}]
     property var currentItems:  []   // QVariantList from AppBridge.listDirectory
     property var selectedItem:  null // one item dict or null
 
-    property string networkRoot: "\\\\SIG-SLC-Storage"
+    // NAS root comes from .env (SLC_STORAGE_HOST) via SettingsBridge — no
+    // hardcoded \\server literal lives in QML anymore.
+    property string networkRoot: SettingsBridge.slcStorageHost
     property string currentPath: navStack.length > 0 ? navStack[navStack.length - 1].path : ""
 
+    // Convenience read for hosts: the selected file path, or "" when nothing
+    // (or a directory) is selected.
+    readonly property string selectedPath:
+        (selectedItem && !selectedItem.isDir) ? selectedItem.path : ""
+
+    // Listing status (NAS access can block briefly even with the 5s timeout).
+    property bool loading:    false
+    property bool loadFailed: false
+
+    // Compact (responsive) layout for narrow containers like the editor column:
+    // the 210px quick-access sidebar collapses into a location icon-rail in the
+    // toolbar, and the per-row MODIFICADO/TAMAÑO columns drop out (that data
+    // still shows in the status bar for the selected file). The full-width Clips
+    // tab keeps the sidebar + 4 columns.
+    readonly property bool compact: width > 0 && width < 520
+    readonly property string currentLocationLabel:
+        navStack.length > 0 ? navStack[0].label : "Ubicación"
+
+    // Jump straight to a top-level location (resets the breadcrumb), shared by
+    // the sidebar entries and the compact location rail.
+    function goToLocation(label, path) {
+        navStack = []
+        openPath(label, path)
+    }
+
+    onSelectedItemChanged: {
+        if (selectedItem && !selectedItem.isDir)
+            root.fileSelected(selectedItem.path)
+    }
+
     // ── Navigation helpers ─────────────────────────────────────────────
+    // Defer the (synchronous, possibly slow) listDirectory call to the next
+    // event-loop tick via Qt.callLater so the "Conectando…" frame paints first.
+    function _load(path) {
+        root.loading = true
+        root.loadFailed = false
+        Qt.callLater(function () {
+            var items = AppBridge.listDirectory(path)
+            root.currentItems = items
+            root.loadFailed = AppBridge.lastListFailed()
+            root.loading = false
+        })
+    }
+
+    function reloadCurrent() {
+        root.selectedItem = null
+        if (root.currentPath !== "") root._load(root.currentPath)
+        else { root.currentItems = []; root.loadFailed = false }
+    }
+
     function openPath(label, path) {
         navStack = navStack.concat([{ label: label, path: path }])
         selectedItem = null
-        currentItems = AppBridge.listDirectory(path)
+        _load(path)
     }
 
     function goBack() {
@@ -41,19 +95,21 @@ Item {
         var ns = navStack.slice(0, navStack.length - 1)
         navStack = ns
         selectedItem = null
-        currentItems = ns.length > 0 ? AppBridge.listDirectory(ns[ns.length - 1].path) : []
+        if (ns.length > 0) _load(ns[ns.length - 1].path)
+        else { currentItems = []; loadFailed = false }
     }
 
     function goTocrumb(index) {
         navStack = navStack.slice(0, index + 1)
         selectedItem = null
-        currentItems = AppBridge.listDirectory(navStack[navStack.length - 1].path)
+        _load(navStack[navStack.length - 1].path)
     }
 
     function openRoot() {
         navStack = []
         selectedItem = null
         currentItems = []
+        loadFailed = false
     }
 
     function openItem(item) {
@@ -69,7 +125,8 @@ Item {
         // LEFT SIDEBAR  (quick access)
         // ──────────────────────────────────────────────────────────────
         Rectangle {
-            Layout.preferredWidth: 210
+            visible: !root.compact          // collapses into the toolbar rail when narrow
+            Layout.preferredWidth: root.compact ? 0 : 210
             Layout.fillHeight: true
             color: W.Tokens.bgSurface
             // right border only
@@ -179,13 +236,46 @@ Item {
                     anchors { left: parent.left; right: parent.right; leftMargin: 10; rightMargin: 10; verticalCenter: parent.verticalCenter }
                     spacing: 6
 
-                    // Back / Up
+                    // Compact location rail — replaces the sidebar when narrow.
+                    Row {
+                        visible: root.compact
+                        spacing: 4
+                        Repeater {
+                            model: [
+                                { ic: "◈", lbl: "SIG-SLC-Storage",    pth: root.networkRoot },
+                                { ic: "▤", lbl: "Clips combinados",   pth: "LOCAL_CLIPS" },
+                                { ic: "▦", lbl: "Clips por pantalla", pth: "LOCAL_RAW" }
+                            ]
+                            delegate: Rectangle {
+                                required property var modelData
+                                width: 30; height: 30; radius: W.Tokens.rXs
+                                property bool sel: root.navStack.length > 0 && root.navStack[0].path === modelData.pth
+                                color: sel ? W.Tokens.primaryDim
+                                            : (lh.hovered ? Qt.rgba(1,1,1,0.08) : Qt.rgba(1,1,1,0.04))
+                                border.color: sel ? W.Tokens.accentPrimary : "transparent"
+                                border.width: 1
+                                HoverHandler { id: lh }
+                                TapHandler { onTapped: root.goToLocation(modelData.lbl, modelData.pth) }
+                                ToolTip.visible: lh.hovered
+                                ToolTip.text: modelData.lbl
+                                Text {
+                                    anchors.centerIn: parent; text: modelData.ic
+                                    color: sel ? W.Tokens.accentPrimary : W.Tokens.textMuted
+                                    font.pixelSize: 14
+                                }
+                            }
+                        }
+                    }
+
+                    // Back / Up — hidden when compact (the rail + breadcrumb cover nav).
                     NavBtn {
+                        visible: !root.compact
                         label: "←"
                         enabled: root.navStack.length > 0
                         onActivated: root.goBack()
                     }
                     NavBtn {
+                        visible: !root.compact
                         label: "↑"
                         enabled: root.navStack.length > 1
                         onActivated: root.goTocrumb(root.navStack.length - 2)
@@ -245,16 +335,16 @@ Item {
                     NavBtn {
                         label: "⟳"
                         enabled: root.navStack.length > 0
-                        onActivated: {
-                            root.selectedItem = null
-                            root.currentItems = AppBridge.listDirectory(root.currentPath)
-                        }
+                        onActivated: root.reloadCurrent()
                     }
                 }
             }
 
             // ── Column headers ──────────────────────────────────────
+            // Hidden when compact — the single-line rows are self-evident and
+            // the meta moves to the status bar.
             Rectangle {
+                visible: !root.compact
                 Layout.fillWidth: true; height: 28
                 color: W.Tokens.bgSurface
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: W.Tokens.borderBase }
@@ -274,10 +364,62 @@ Item {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 color: W.Tokens.bgBase; clip: true
 
+                // Loading state — "Conectando…" while listDirectory runs.
+                Column {
+                    anchors.centerIn: parent; spacing: 14
+                    visible: root.loading
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "⟳"; color: W.Tokens.accentPrimary; font.pixelSize: 46
+                        RotationAnimation on rotation {
+                            running: root.loading; loops: Animation.Infinite
+                            from: 0; to: 360; duration: 900
+                        }
+                    }
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "Conectando a " + root.networkRoot + "…"
+                        color: W.Tokens.textMuted; font.family: W.Tokens.mono; font.pixelSize: 13
+                    }
+                }
+
+                // Error state — failed UNC auth / dead share, with Retry.
+                Column {
+                    anchors.centerIn: parent; spacing: 14
+                    visible: !root.loading && root.loadFailed && root.currentItems.length === 0
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "!"; color: W.Tokens.accentRecord; font.pixelSize: 46; font.weight: Font.Bold
+                    }
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "Sin conexión a " + root.networkRoot
+                        color: W.Tokens.textPrimary; font.family: W.Tokens.sans; font.pixelSize: 15; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 360; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                        text: "Revisa las credenciales NAS (.env) o que el recurso esté disponible."
+                        color: W.Tokens.textMuted; font.family: W.Tokens.mono; font.pixelSize: 12
+                    }
+                    Rectangle {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        implicitWidth: retryLbl.implicitWidth + 28; height: 28
+                        radius: W.Tokens.rPill; color: W.Tokens.accentPrimary
+                        Text { id: retryLbl; anchors.centerIn: parent; text: "⟳  Reintentar"
+                               color: W.Tokens.bgBase; font.family: W.Tokens.sans
+                               font.pixelSize: 12; font.weight: Font.Bold }
+                        HoverHandler { id: rtHov }
+                        Rectangle { anchors.fill: parent; radius: parent.radius; color: Qt.rgba(1,1,1,0.18)
+                                    opacity: rtHov.hovered ? 1 : 0; Behavior on opacity { NumberAnimation { duration: 100 } } }
+                        TapHandler { onTapped: root.reloadCurrent() }
+                    }
+                }
+
                 // Empty / welcome state
                 Column {
                     anchors.centerIn: parent; spacing: 14
-                    visible: root.currentItems.length === 0
+                    visible: !root.loading && !root.loadFailed && root.currentItems.length === 0
 
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -299,7 +441,7 @@ Item {
                     anchors.fill: parent
                     model: root.currentItems
                     clip: true; spacing: 0
-                    visible: root.currentItems.length > 0
+                    visible: !root.loading && root.currentItems.length > 0
 
                     ScrollBar.vertical: ScrollBar {
                         policy: ScrollBar.AsNeeded
@@ -371,8 +513,12 @@ Item {
                             Item { width: 10 }
 
                             // ── Name ─────────────────────────────────
+                            // Compact: name fills the row (icon + name + type
+                            // badge only). Wide: leave room for the date/size cols.
                             Text {
-                                width: rowBg.width - 42 - 155 - 84 - 52 - 14 - 28 - 10 - 16
+                                width: root.compact
+                                       ? rowBg.width - 14 - 28 - 10 - 52 - 16
+                                       : rowBg.width - 42 - 155 - 84 - 52 - 14 - 28 - 10 - 16
                                 height: parent.height
                                 verticalAlignment: Text.AlignVCenter
                                 text: modelData.name
@@ -382,18 +528,20 @@ Item {
                                 elide: Text.ElideRight
                             }
 
-                            // ── Modified date ────────────────────────
+                            // ── Modified date ──────────────────────── (wide only)
                             Text {
-                                width: 155; height: parent.height
+                                visible: !root.compact
+                                width: root.compact ? 0 : 155; height: parent.height
                                 verticalAlignment: Text.AlignVCenter
                                 text: modelData.modified || "—"
                                 color: W.Tokens.textDim
                                 font.family: W.Tokens.mono; font.pixelSize: 13
                             }
 
-                            // ── Size ─────────────────────────────────
+                            // ── Size ───────────────────────────────── (wide only)
                             Text {
-                                width: 84; height: parent.height
+                                visible: !root.compact
+                                width: root.compact ? 0 : 84; height: parent.height
                                 horizontalAlignment: Text.AlignRight
                                 verticalAlignment: Text.AlignVCenter
                                 text: modelData.isDir ? "—" : (modelData.size || "—")

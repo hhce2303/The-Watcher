@@ -64,6 +64,8 @@ class AppBridge(QObject):
     requestReceived        = Signal()
     # Supervisor: a previously sent request changed status
     requestStatusChanged   = Signal(str, str)   # (id, status)
+    # IT: request system (WS server/client) was wired — header/status refresh
+    requestSystemChanged   = Signal()
 
     # ── Private thread-bridge signals ─────────────────────────────────
     _monitors_from_service = Signal(object)   # List[MonitorInfo] — detection thread → main
@@ -185,7 +187,7 @@ class AppBridge(QObject):
             m for m in self._all_monitors
             if m.fingerprint in self._selected_fingerprints
         ]
-        if selected:
+        if selected and self._recording_service is not None:
             self._recording_service.change_monitors(selected)
 
     def _persist_selection(self) -> None:
@@ -207,6 +209,9 @@ class AppBridge(QObject):
             logger.warning("Failed to persist monitor selection.")
 
     def _poll(self) -> None:
+        # No recording stack on supervisor / unconfigured machines.
+        if self._recording_service is None:
+            return
         recording = self._recording_service.is_recording()
         if recording != self._is_recording:
             self._is_recording = recording
@@ -412,32 +417,49 @@ class AppBridge(QObject):
         self.currentClipPathChanged.emit()
         try:
             info = self._player_service.load(p)
+            # codec/res/fps/bitrate live on the VIDEO stream, not ClipInfo itself.
+            v = info.video_stream if info else None
             self._current_clip_info = {
-                'resolution': f'{info.width}×{info.height}' if info else '',
-                'codec':      info.codec if info else '',
-                'fps':        str(info.fps) if info else '',
-                'bitrate':    f'{info.bitrate_kbps} kbps' if info else '',
+                'resolution':      f'{v.width}×{v.height}' if (v and v.width and v.height) else '',
+                'codec':           (info.video_codec or '') if info else '',
+                'fps':             f'{info.fps:.0f}' if (info and info.fps) else '',
+                'bitrate':         f'{v.bitrate_kbps} kbps' if (v and v.bitrate_kbps) else '',
+                'durationSeconds': info.duration_seconds if info else 0,
             }
         except Exception:
+            logger.exception("loadClip: failed to inspect {}", p)
             self._current_clip_info = {}
         self.currentClipInfoChanged.emit()
 
     # UNC servers that have already been authenticated this session
     _unc_authenticated: set[str] = set()
 
-    def _unc_connect(self, server: str) -> None:
+    # Whether the most recent listDirectory() call failed to reach its target
+    # (failed UNC auth, dead share, permission error) vs. simply returned an
+    # empty-but-reachable directory. QML reads this via lastListFailed() to
+    # show an honest "Sin conexión · Reintentar" row instead of a blank folder.
+    _last_list_failed: bool = False
+
+    def _unc_connect(self, server: str) -> bool:
         """Authenticate a UNC server via IPC$ using stored NAS credentials.
 
         ``\\server\\IPC$`` is the standard Windows null-session endpoint used
         to authenticate all subsequent access to that server.
         The password is NEVER logged.
+
+        Returns ``True`` only when authentication succeeded (or when there are
+        no credentials configured, in which case we let the OS try the path
+        directly with the current user's token). Returns ``False`` on a real
+        ``net use`` failure or timeout so the caller does NOT cache a failed
+        server — otherwise a transient NAS outage would permanently suppress
+        re-auth for the whole process and break the UI's Retry button.
         """
         import subprocess  # noqa: PLC0415
         from app.infrastructure.config import get_settings  # noqa: PLC0415
         settings = get_settings()
         if not settings.nas_username:
             logger.debug("No NAS_USERNAME configured — skipping net use for {}", server)
-            return
+            return True
         try:
             ipc = f"{server}\\IPC$"
             cmd = [
@@ -450,17 +472,19 @@ class AppBridge(QObject):
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=15,
+                timeout=5,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if result.returncode == 0:
                 logger.info("ClipBrowser: authenticated {} as '{}'.", server, settings.nas_username)
-            else:
-                err = result.stderr.decode("utf-8", errors="replace").strip()
-                logger.warning("ClipBrowser: net use {} failed (rc={}) — {}",
-                               ipc, result.returncode, err[:300])
+                return True
+            err = result.stderr.decode("utf-8", errors="replace").strip()
+            logger.warning("ClipBrowser: net use {} failed (rc={}) — {}",
+                           ipc, result.returncode, err[:300])
+            return False
         except Exception:
             logger.exception("ClipBrowser: error connecting to {}.", server)
+            return False
 
     def _list_unc_server(self, server: str) -> list:
         """Enumerate shares on a UNC server using 'net view'.
@@ -475,12 +499,13 @@ class AppBridge(QObject):
                 ["net", "view", server],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=15,
+                timeout=5,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if result.returncode != 0:
                 err = result.stderr.decode("utf-8", errors="replace").strip()
                 logger.warning("ClipBrowser: net view {} failed — {}", server, err[:200])
+                self._last_list_failed = True
                 return []
 
             shares: list[dict] = []
@@ -513,6 +538,7 @@ class AppBridge(QObject):
             return shares
         except Exception:
             logger.exception("ClipBrowser: error enumerating shares on {}.", server)
+            self._last_list_failed = True
             return []
 
     @Slot(str, result='QVariantList')
@@ -528,7 +554,8 @@ class AppBridge(QObject):
         this session.
         """
         import os          # noqa: PLC0415
-        import subprocess  # noqa: PLC0415
+
+        self._last_list_failed = False
 
         resolved = path
         if path == "LOCAL_CLIPS":
@@ -545,8 +572,13 @@ class AppBridge(QObject):
 
             if server:
                 if server not in AppBridge._unc_authenticated:
-                    self._unc_connect(server)
-                    AppBridge._unc_authenticated.add(server)
+                    # Cache ONLY on success — a failed auth must stay retryable
+                    # (otherwise the UI's Retry button silently skips re-auth).
+                    if self._unc_connect(server):
+                        AppBridge._unc_authenticated.add(server)
+                    else:
+                        self._last_list_failed = True
+                        return []
 
                 # Bare server path (no share) — enumerate shares via net view
                 if len(parts) <= 1:
@@ -577,7 +609,15 @@ class AppBridge(QObject):
                         pass
         except (OSError, PermissionError) as exc:
             logger.warning("ClipBrowser: cannot list '{}': {}", resolved, exc)
+            self._last_list_failed = True
         return result
+
+    @Slot(result=bool)
+    def lastListFailed(self) -> bool:
+        """True if the most recent listDirectory() hit a connection/permission
+        failure (vs. an empty-but-reachable directory). QML uses this to show a
+        'Sin conexión · Reintentar' row instead of a blank folder."""
+        return self._last_list_failed
 
     @Slot()
     def identifyMonitors(self) -> None:
@@ -619,6 +659,10 @@ class AppBridge(QObject):
             client.statusReceived.connect(
                 lambda rid, st: self._on_status_received(rid, st)
             )
+
+        # Tell QML the request system is now wired so the IT header/status
+        # can show honest WS state (set_request_system runs after engine.load).
+        self.requestSystemChanged.emit()
 
     def _on_request_received(self, req_id: str) -> None:
         if self._request_adapter is not None:
@@ -764,6 +808,20 @@ class AppBridge(QObject):
         if self._request_server is not None:
             self._request_server.send_status_update(req_id, status)
         self.requestReceived.emit()   # refresh inbox UI
+
+    # ── IT request-server status (honest, no fake greens) ──────────────
+
+    @Property(bool, notify=requestSystemChanged)
+    def itServerActive(self) -> bool:
+        """True when the IT WebSocket request server is wired and listening."""
+        return self._request_server is not None
+
+    @Property(int, notify=requestSystemChanged)
+    def itServerPort(self) -> int:
+        """Listening port of the IT request server, or 0 when not active."""
+        if self._request_server is None:
+            return 0
+        return int(getattr(self._request_server, "_port", 0))
 
     # ── Helpers ───────────────────────────────────────────────────────
 

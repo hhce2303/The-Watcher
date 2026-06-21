@@ -7,12 +7,19 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $scriptDir
 
-# .venv lives one level up (workspace root) so it is not tied to any specific username
-$venvDir = Join-Path $scriptDir "..\.venv"
+# El venv vive FUERA de OneDrive (en %LOCALAPPDATA%) para no sincronizarse entre PCs.
+$venvDir = Join-Path $env:LOCALAPPDATA "The Watcher\venv"
 
 if (-not (Test-Path "$venvDir\Scripts\Activate.ps1")) {
-    Write-Error "Virtual environment not found. Run setup_env.ps1 from the workspace root first."
-    exit 1
+    $setup = Join-Path $scriptDir "..\setup_env.ps1"
+    if (Test-Path $setup) {
+        Write-Host "Entorno virtual no encontrado -> ejecutando setup_env.ps1..." -ForegroundColor Yellow
+        & powershell -ExecutionPolicy Bypass -File $setup
+    }
+    if (-not (Test-Path "$venvDir\Scripts\Activate.ps1")) {
+        Write-Error "No se pudo preparar el entorno virtual. Ejecuta setup_env.ps1 manualmente."
+        exit 1
+    }
 }
 
 & "$venvDir\Scripts\Activate.ps1"

@@ -1,77 +1,95 @@
 # setup_env.ps1
-# Run this script once on each PC to create a local virtual environment.
-# Works regardless of username or Python installation path.
-# Usage: Right-click -> "Run with PowerShell"  or:  powershell -ExecutionPolicy Bypass -File setup_env.ps1
+# Crea o repara el entorno virtual de Python para ESTE PC.
+#
+# El venv vive FUERA de OneDrive (en %LOCALAPPDATA%\The Watcher\venv) a proposito:
+# un venv contiene rutas absolutas y binarios atados a una maquina/usuario concretos,
+# asi que NO debe sincronizarse entre PCs. Cada equipo crea el suyo.
+#
+# Uso:  powershell -ExecutionPolicy Bypass -File setup_env.ps1
+#       (o boton derecho -> "Ejecutar con PowerShell")
 
 $ErrorActionPreference = "Stop"
 
-$venvPath = Join-Path $PSScriptRoot ".venv"
+# -- Rutas --------------------------------------------------------------------
+$venvPath   = Join-Path $env:LOCALAPPDATA "The Watcher\venv"
+$venvPython = Join-Path $venvPath "Scripts\python.exe"
+$reqFile    = Join-Path $PSScriptRoot "project\requirements.txt"
 
-# ── 1. Find Python 3.13 ──────────────────────────────────────────────────────
+# -- 1. Localizar Python 3.13+ ------------------------------------------------
+function Test-PyVersion($exe) {
+    try { $v = & $exe --version 2>&1 } catch { return $false }
+    # Acepta 3.13..3.19 y 3.20+ (por si sube de version)
+    return ($v -match "Python 3\.(1[3-9]|[2-9]\d)")
+}
+
 $python = $null
 
-$cmd = Get-Command python -ErrorAction SilentlyContinue
-if ($cmd) {
-    $ver = & $cmd.Source --version 2>&1
-    if ($ver -match "Python 3\.1[3-9]") { $python = $cmd.Source }
+# El py launcher es lo mas fiable en Windows: pedimos explicitamente 3.13+
+$pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+if ($pyLauncher) {
+    $cand = & $pyLauncher.Source -3 -c "import sys; print(sys.executable)" 2>$null
+    if ($cand -and (Test-PyVersion $cand)) { $python = $cand }
 }
 if (-not $python) {
-    $cmd = Get-Command py -ErrorAction SilentlyContinue
-    if ($cmd) {
-        $ver = & $cmd.Source --version 2>&1
-        if ($ver -match "Python 3\.1[3-9]") { $python = $cmd.Source }
-    }
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($cmd -and (Test-PyVersion $cmd.Source)) { $python = $cmd.Source }
 }
 if (-not $python) {
     $locations = @(
         "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe",
+        "$env:ProgramFiles\Python313\python.exe",
         "C:\Python313\python.exe"
     )
     foreach ($loc in $locations) {
-        if (Test-Path $loc) { $python = $loc; break }
+        if ((Test-Path $loc) -and (Test-PyVersion $loc)) { $python = $loc; break }
     }
 }
 if (-not $python) {
-    Write-Error "Python 3.13+ not found. Please install it from https://python.org and re-run this script."
+    Write-Error "No se encontro Python 3.13+. Instalalo desde https://python.org y vuelve a ejecutar este script."
     exit 1
 }
-Write-Host "Using Python: $python ($( & $python --version 2>&1 ))" -ForegroundColor Cyan
+Write-Host "Python: $python ($(& $python --version 2>&1))" -ForegroundColor Cyan
 
-# ── 2. Recreate .venv if it belongs to a different machine ──────────────────
-if (Test-Path "$venvPath\pyvenv.cfg") {
-    $cfg = Get-Content "$venvPath\pyvenv.cfg" -Raw
-    $escapedUser = [regex]::Escape($env:USERNAME)
-    if ($cfg -notmatch $escapedUser) {
-        Write-Host ".venv was created by a different user -- recreating..." -ForegroundColor Yellow
-        Remove-Item $venvPath -Recurse -Force
-    }
+# -- 2. Validar venv existente; recrear si esta roto --------------------------
+# En vez de adivinar por el nombre de usuario, simplemente ejecutamos el python
+# del venv. Si su Python base ya no existe (otro PC/usuario), fallara y recreamos.
+$venvOk = $false
+if (Test-Path $venvPython) {
+    & $venvPython --version *> $null
+    if ($LASTEXITCODE -eq 0) { $venvOk = $true }
+}
+if ((Test-Path $venvPath) -and (-not $venvOk)) {
+    Write-Host "El venv existente esta roto -> recreando..." -ForegroundColor Yellow
+    Remove-Item $venvPath -Recurse -Force
 }
 
-# ── 3. Create venv if it doesn't exist ──────────────────────────────────────
-if (-not (Test-Path "$venvPath\Scripts\python.exe")) {
-    Write-Host "Creating virtual environment at $venvPath ..." -ForegroundColor Cyan
+# -- 3. Crear venv si no existe -----------------------------------------------
+if (-not (Test-Path $venvPython)) {
+    Write-Host "Creando entorno virtual en $venvPath ..." -ForegroundColor Cyan
     & $python -m venv $venvPath
+    if ($LASTEXITCODE -ne 0) { Write-Error "Fallo la creacion del venv."; exit 1 }
 }
 
-$pip = "$venvPath\Scripts\pip.exe"
+# -- 4. Instalar dependencias -------------------------------------------------
+Write-Host "Actualizando pip..." -ForegroundColor Cyan
+& $venvPython -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { Write-Error "Fallo al actualizar pip."; exit 1 }
 
-# ── 4. Install packages ──────────────────────────────────────────────────────
-Write-Host "Installing packages..." -ForegroundColor Cyan
-
-# Core UI + runtime (not in requirements.txt)
-& $pip install --quiet PySide6 screeninfo
-
-# requirements.txt (handle UTF-16 BOM encoding produced by the other PC)
-$reqFile = Join-Path $PSScriptRoot "project\requirements.txt"
 if (Test-Path $reqFile) {
-    $raw = Get-Content $reqFile -Encoding Unicode -Raw
-    $tmpReq = [System.IO.Path]::GetTempFileName() + ".txt"
-    $raw | Set-Content $tmpReq -Encoding utf8
-    & $pip install --quiet -r $tmpReq
+    Write-Host "Instalando requirements.txt..." -ForegroundColor Cyan
+    # requirements.txt puede venir en UTF-16 (BOM) generado en otro PC.
+    # Get-Content -Raw detecta el BOM automaticamente; lo reescribimos a UTF-8
+    # para que pip no se atragante.
+    $tmpReq = Join-Path $env:TEMP ("watcher_req_{0}.txt" -f $PID)
+    (Get-Content $reqFile -Raw) | Set-Content $tmpReq -Encoding utf8
+    & $venvPython -m pip install -r $tmpReq
+    $code = $LASTEXITCODE
     Remove-Item $tmpReq -ErrorAction SilentlyContinue
+    if ($code -ne 0) { Write-Error "Fallo la instalacion de requirements.txt."; exit 1 }
 }
 
 Write-Host ""
-Write-Host "Setup complete! .venv is ready for this machine." -ForegroundColor Green
-Write-Host "In VS Code select the interpreter: .venv\Scripts\python.exe" -ForegroundColor Green
+Write-Host "Listo. venv preparado para este PC." -ForegroundColor Green
+Write-Host "  Ubicacion: $venvPath" -ForegroundColor Green
+Write-Host "  Interprete para VS Code: $venvPython" -ForegroundColor Green
