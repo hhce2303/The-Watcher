@@ -64,6 +64,9 @@ class MonitorDetectionService:
         self._stop_event = threading.Event()
         self._watchdog_thread: Optional[threading.Thread] = None
 
+        # Phase-tagged logger (F0 DETECT) — see logging_setup for the scheme.
+        self._log = logger.bind(phase="DETECT")
+
     # ── Public API ────────────────────────────────────────────────────
 
     def detect_now(self) -> List[MonitorInfo]:
@@ -80,7 +83,7 @@ class MonitorDetectionService:
             name="monitor-detection-watchdog",
         )
         self._watchdog_thread.start()
-        logger.info(
+        self._log.info(
             "MonitorDetectionService started — polling every {}s, max_restarts={}.",
             self._poll_interval, self._max_restarts,
         )
@@ -91,7 +94,7 @@ class MonitorDetectionService:
         if self._watchdog_thread is not None:
             self._watchdog_thread.join(timeout=5)
             self._watchdog_thread = None
-        logger.info("MonitorDetectionService stopped.")
+        self._log.info("MonitorDetectionService stopped.")
 
     def get_monitors(self) -> List[MonitorInfo]:
         """Return last confirmed monitor list (thread-safe)."""
@@ -196,26 +199,26 @@ class MonitorDetectionService:
             self._monitors = list(new_monitors)
 
         if added or removed:
-            logger.info(
+            self._log.info(
                 "MonitorDetectionService: change detected — "
                 "+{} added, -{} removed. Total: {}.",
                 len(added), len(removed), len(new_monitors),
             )
         else:
-            logger.debug(
+            self._log.debug(
                 "MonitorDetectionService: no change — {} monitor(s) stable.",
                 len(new_monitors),
             )
 
         for m in added:
-            logger.info(
+            self._log.bind(mon=f"m{m.index}").info(
                 "  [MONITOR+] {} | {}×{} @ ({},{}) | primary={} | index={}",
                 m.display_name, m.width, m.height, m.x, m.y, m.is_primary, m.index,
             )
             self._fire(self._on_monitor_added, m)
 
         for m in removed:
-            logger.warning(
+            self._log.bind(mon=f"m{m.index}").warning(
                 "  [MONITOR-] {} | {}×{} @ ({},{}) | index={} — DISCONNECTED",
                 m.display_name, m.width, m.height, m.x, m.y, m.index,
             )

@@ -86,6 +86,10 @@ class FFmpegRecorderAdapter(RecorderPort):
         # Rolling buffer of the last N stderr lines — dumped at ERROR level on crash.
         self._stderr_tail: deque[str] = deque(maxlen=30)
 
+        # Phase-tagged logger (F2 CAPTURE). mon is filled once set_monitor runs.
+        self._mon_tag = "-"
+        self._log = logger.bind(phase="CAPTURE", mon=self._mon_tag)
+
     # ------------------------------------------------------------------
     # RecorderPort interface
     # ------------------------------------------------------------------
@@ -103,7 +107,7 @@ class FFmpegRecorderAdapter(RecorderPort):
         self._recover_existing_segments(output_dir)
 
         cmd = self._build_ffmpeg_command(output_dir)
-        logger.info("Starting FFmpeg: {}", " ".join(cmd))
+        self._log.info("Starting FFmpeg: {}", " ".join(cmd))
 
         self._process = subprocess.Popen(
             cmd,
@@ -127,7 +131,7 @@ class FFmpegRecorderAdapter(RecorderPort):
             name="recorder-watchdog",
         )
         self._watchdog_thread.start()
-        logger.info("Recorder started. Output: {}", output_dir)
+        self._log.info("Recorder started. Output: {}", output_dir)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -137,12 +141,15 @@ class FFmpegRecorderAdapter(RecorderPort):
                 self._process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self._process.kill()
-                logger.warning("FFmpeg did not stop in time — killed.")
+                self._log.warning("FFmpeg did not stop in time — killed.")
             self._process = None
+        if self._watchdog_thread is not None:
+            self._watchdog_thread.join(timeout=3)
+            self._watchdog_thread = None
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=3)
             self._stderr_thread = None
-        logger.info("Recorder stopped.")
+        self._log.info("Recorder stopped.")
 
     def is_running(self) -> bool:
         return self._process is not None and self._process.poll() is None
@@ -160,7 +167,10 @@ class FFmpegRecorderAdapter(RecorderPort):
         """Set the monitor to capture. Takes effect on the next start()."""
         with self._monitors_lock:
             self._monitors = [monitor]
-        logger.info(
+        # Now that we know which screen this recorder serves, tag all its logs.
+        self._mon_tag = f"m{monitor.index}"
+        self._log = logger.bind(phase="CAPTURE", mon=self._mon_tag)
+        self._log.info(
             "Capture monitor: {} (gdigrab region {}x{} @ {},{} on virtual desktop)",
             monitor.display_name,
             monitor.width,
@@ -190,7 +200,7 @@ class FFmpegRecorderAdapter(RecorderPort):
         # Live capture: real-time preset so FFmpeg keeps up with the screen.
         encoder, encoder_flags = get_encoder(self._codec, realtime=True)
 
-        logger.info(
+        self._log.info(
             "[RECORDER] {} — gdigrab: region={}x{} offset=({},{}) "
             "encoder={} preview={}",
             monitor.display_name,
@@ -266,7 +276,7 @@ class FFmpegRecorderAdapter(RecorderPort):
         if not existing:
             return
 
-        logger.info("Recovering {} segment(s) from previous run.", len(existing))
+        self._log.info("Recovering {} segment(s) from previous run.", len(existing))
         for i, path in enumerate(existing):
             started_at = _parse_start_time(path.name)
             if started_at is None:
@@ -284,10 +294,11 @@ class FFmpegRecorderAdapter(RecorderPort):
                 )
 
             if ended_at > started_at:
-                self._emit_segment(path, started_at, ended_at)
+                # Recovered files come from a dead process: they are complete.
+                self._emit_segment(path, started_at, ended_at, finalized=True)
             self._known_files.add(path.name)
 
-        logger.info("Crash recovery complete — {} file(s) re-indexed.", len(existing))
+        self._log.info("Crash recovery complete — {} file(s) re-indexed.", len(existing))
 
     def _watchdog_loop(self) -> None:
         """
@@ -312,8 +323,10 @@ class FFmpegRecorderAdapter(RecorderPort):
             # --- Crash detection: FFmpeg process exited unexpectedly ---
             if self._process is not None and self._process.poll() is not None:
                 rc = self._process.returncode
-                logger.error("FFmpeg process exited unexpectedly (rc={}).", rc)
                 self._process = None
+                if self._stop_event.is_set():
+                    break  # intentional stop — do not trigger supervisor restart
+                self._log.error("FFmpeg process exited unexpectedly (rc={}).", rc)
                 self._fire_crash()
                 break
 
@@ -331,10 +344,15 @@ class FFmpegRecorderAdapter(RecorderPort):
 
                 if pending is not None:
                     prev_path, prev_started = pending
-                    self._emit_segment(prev_path, prev_started, started_at)
+                    # The previous segment's real end-time is now known (this
+                    # new segment's start) — re-emit it as finalized.
+                    self._emit_segment(
+                        prev_path, prev_started, started_at, finalized=True
+                    )
 
                 estimated_end = started_at + timedelta(seconds=self._segment_duration)
-                self._emit_segment(path, started_at, estimated_end)
+                # In-progress: ended_at is only an estimate until the next segment.
+                self._emit_segment(path, started_at, estimated_end, finalized=False)
 
                 pending = (path, started_at)
                 self._known_files.add(path.name)
@@ -346,7 +364,9 @@ class FFmpegRecorderAdapter(RecorderPort):
                 self._last_segment_time > 0
                 and (time.monotonic() - self._last_segment_time) > stall_threshold
             ):
-                logger.error(
+                if self._stop_event.is_set():
+                    break  # intentional stop — do not trigger supervisor restart
+                self._log.error(
                     "Recorder stalled — no new segment for {}s.", stall_threshold
                 )
                 self._last_segment_time = time.monotonic()
@@ -357,13 +377,22 @@ class FFmpegRecorderAdapter(RecorderPort):
 
         if pending is not None:
             prev_path, prev_started = pending
-            self._emit_segment(prev_path, prev_started, datetime.now(tz=timezone.utc))
+            # Recorder is stopping: the last open segment is now closed.
+            self._emit_segment(
+                prev_path, prev_started, datetime.now(tz=timezone.utc), finalized=True
+            )
 
     def _emit_segment(
-        self, path: Path, started_at: datetime, ended_at: datetime
+        self,
+        path: Path,
+        started_at: datetime,
+        ended_at: datetime,
+        finalized: bool = False,
     ) -> None:
-        segment = Segment(path=path, started_at=started_at, ended_at=ended_at)
-        logger.debug("Segment ready: {}", path.name)
+        segment = Segment(
+            path=path, started_at=started_at, ended_at=ended_at, finalized=finalized
+        )
+        self._log.debug("Segment ready: {}", path.name)
         if self._on_segment_ready is not None:
             self._on_segment_ready(segment)
 
@@ -371,7 +400,7 @@ class FFmpegRecorderAdapter(RecorderPort):
         """Log the last FFmpeg stderr lines and invoke the on_crash callback."""
         tail = list(self._stderr_tail)
         if tail:
-            logger.error(
+            self._log.error(
                 "FFmpeg last output ({} lines):\n{}",
                 len(tail),
                 "\n".join(f"  [ffmpeg] {l}" for l in tail),
