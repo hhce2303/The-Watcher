@@ -7,12 +7,15 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $scriptDir
 
-if (-not (Test-Path ".\venv\Scripts\Activate.ps1")) {
-    Write-Error "Virtual environment not found. Run: python -m venv venv && pip install -r requirements.txt"
+# .venv lives one level up (workspace root) so it is not tied to any specific username
+$venvDir = Join-Path $scriptDir "..\.venv"
+
+if (-not (Test-Path "$venvDir\Scripts\Activate.ps1")) {
+    Write-Error "Virtual environment not found. Run setup_env.ps1 from the workspace root first."
     exit 1
 }
 
-.\venv\Scripts\Activate.ps1
+& "$venvDir\Scripts\Activate.ps1"
 
 # ── Reset de estado: forzar flujo de instalación/rol ─────────────────────────
 $configDir = "$env:LOCALAPPDATA\The Watcher"
@@ -29,7 +32,7 @@ if (Test-Path $requestsDir) {
     Write-Host "[reset] Carpeta requests/ eliminada."
 }
 
-Write-Host "[reset] Listo. Arrancando desde la selección de rol..." -ForegroundColor Cyan
+Write-Host "[reset] Listo. Arrancando desde la seleccion de rol..." -ForegroundColor Cyan
 
 # ── Qt Quick Controls style ───────────────────────────────────────────────────
 # Force the "Basic" style so custom `background` properties on TextField,
@@ -38,7 +41,7 @@ Write-Host "[reset] Listo. Arrancando desde la selección de rol..." -Foreground
 $env:QT_QUICK_CONTROLS_STYLE = "Basic"
 
 # ── Qt plugin paths ───────────────────────────────────────────────────────────
-$pyside6PluginsPath = & .\venv\Scripts\python.exe -c `
+$pyside6PluginsPath = & "$venvDir\Scripts\python.exe" -c `
     "import PySide6, pathlib; print(pathlib.Path(PySide6.__file__).parent / 'plugins')" `
     2>$null
 if ($pyside6PluginsPath) {
@@ -46,7 +49,7 @@ if ($pyside6PluginsPath) {
     Write-Host "Qt plugin path: $env:QT_PLUGIN_PATH"
 }
 
-$pyside6QmlPath = & .\venv\Scripts\python.exe -c `
+$pyside6QmlPath = & "$venvDir\Scripts\python.exe" -c `
     "import PySide6, pathlib; print(pathlib.Path(PySide6.__file__).parent / 'qml')" `
     2>$null
 if ($pyside6QmlPath) {

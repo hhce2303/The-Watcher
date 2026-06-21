@@ -156,8 +156,14 @@ class RecorderSupervisor:
                     return
                 time.sleep(0.5)
 
-            # Attempt restart
+            # Attempt restart — re-check active under the lock right before
+            # start() to close the window where MonitorWorker.stop() joins this
+            # thread with a short timeout and then calls recorder.stop() while
+            # we are about to call recorder.start().
             try:
+                with self._lock:
+                    if not self._active:
+                        return
                 if self._recorder.is_running():
                     self._recorder.stop()
                 self._storage.ensure_directory(self._segment_dir)
