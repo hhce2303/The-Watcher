@@ -9,6 +9,7 @@ from typing import Optional
 from loguru import logger
 
 from app.core.recording_service.clip_builder import ClipBuilder
+from app.core.recording_service.models import EventContext
 
 
 class EventService:
@@ -20,9 +21,12 @@ class EventService:
     Flow:
         1. trigger_manual_event() is called (from UI button or any adapter).
         2. Cooldown check — if last event was < cooldown_seconds ago, reject.
-        3. Record triggered_at timestamp.
+        3. Snapshot the event (monitor selection + window) at trigger time
+           via ClipBuilder.snapshot_event() → EventContext.
         4. Schedule clip build to run post_seconds later (after post-recording window).
-        5. At expiry: ClipBuilder.build(triggered_at) assembles the final MP4.
+        5. At expiry: ClipBuilder.build(ctx) assembles the final MP4 from the
+           frozen snapshot, so the result is deterministic even if the selection
+           changed during the post-event window.
 
     The scheduler uses threading.Timer (daemon thread), so it never blocks
     the caller and does not prevent clean shutdown.
@@ -70,8 +74,15 @@ class EventService:
 
             self._last_event_at = now
 
-        logger.info("Event accepted at {}", now.isoformat())
-        self._schedule_clip_build(now)
+        # Freeze the monitor selection + window NOW (trigger time) so the clip
+        # is deterministic even if the selection changes during the post-window.
+        ctx = self._clip_builder.snapshot_event(now)
+        logger.bind(phase="BUILD-EVENT", evt=ctx.event_id).info(
+            "Event accepted at {} — {} monitor(s) snapshotted.",
+            now.isoformat(),
+            len(ctx.monitors),
+        )
+        self._schedule_clip_build(ctx)
         return True
 
     @property
@@ -101,54 +112,56 @@ class EventService:
     # Scheduling
     # ------------------------------------------------------------------
 
-    def _schedule_clip_build(self, triggered_at: datetime) -> None:
+    def _schedule_clip_build(self, ctx: EventContext) -> None:
         timer = threading.Timer(
             self._post_seconds,
             self._execute_clip_build,
-            args=(triggered_at, 1),
+            args=(ctx, 1),
         )
         timer.daemon = True
         timer.start()
         with self._lock:
             self._pending_timers = [t for t in self._pending_timers if t.is_alive()]
             self._pending_timers.append(timer)
-        logger.info(
+        logger.bind(phase="BUILD-EVENT", evt=ctx.event_id).info(
             "Clip build scheduled in {}s for event at {}",
             self._post_seconds,
-            triggered_at.isoformat(),
+            ctx.triggered_at.isoformat(),
         )
 
-    def _execute_clip_build(self, triggered_at: datetime, attempt: int = 1) -> None:
+    def _execute_clip_build(self, ctx: EventContext, attempt: int = 1) -> None:
+        log = logger.bind(phase="BUILD-EVENT", evt=ctx.event_id)
         try:
-            output = self._clip_builder.build(triggered_at)
+            output = self._clip_builder.build(ctx)
             if output:
-                logger.info("Clip created: {}", output)
+                log.info("Clip created: {}", output)
             else:
-                logger.error(
+                log.error(
                     "Clip build returned no output for event at {} (attempt {}).",
-                    triggered_at.isoformat(),
+                    ctx.triggered_at.isoformat(),
                     attempt,
                 )
-                self._schedule_retry(triggered_at, attempt)
+                self._schedule_retry(ctx, attempt)
         except Exception:
-            logger.exception(
+            log.exception(
                 "Unexpected error building clip for event at {} (attempt {}).",
-                triggered_at.isoformat(),
+                ctx.triggered_at.isoformat(),
                 attempt,
             )
-            self._schedule_retry(triggered_at, attempt)
+            self._schedule_retry(ctx, attempt)
 
-    def _schedule_retry(self, triggered_at: datetime, attempt: int) -> None:
+    def _schedule_retry(self, ctx: EventContext, attempt: int) -> None:
+        log = logger.bind(phase="BUILD-EVENT", evt=ctx.event_id)
         max_retries = 3
         if attempt >= max_retries:
-            logger.error(
+            log.error(
                 "Clip build permanently failed after {} attempts for event at {}. Giving up.",
                 max_retries,
-                triggered_at.isoformat(),
+                ctx.triggered_at.isoformat(),
             )
             if self._on_clip_failed is not None:
                 try:
-                    ts = triggered_at.strftime("%H:%M:%S")
+                    ts = ctx.triggered_at.strftime("%H:%M:%S")
                     self._on_clip_failed(
                         f"No se pudo crear el clip del evento de las {ts} "
                         f"tras {max_retries} intentos."
@@ -157,17 +170,17 @@ class EventService:
                     logger.debug("on_clip_failed callback raised.")
             return
         next_attempt = attempt + 1
-        logger.info(
+        log.info(
             "Scheduling clip build retry {}/{} in {}s for event at {}.",
             next_attempt,
             max_retries,
             self._retry_delay_seconds,
-            triggered_at.isoformat(),
+            ctx.triggered_at.isoformat(),
         )
         timer = threading.Timer(
             self._retry_delay_seconds,
             self._execute_clip_build,
-            args=(triggered_at, next_attempt),
+            args=(ctx, next_attempt),
         )
         timer.daemon = True
         timer.start()

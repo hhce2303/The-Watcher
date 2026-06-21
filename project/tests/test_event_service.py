@@ -11,11 +11,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.event_service import EventService
+from app.core.recording_service.models import EventContext
+
+
+def _snapshot(t: datetime) -> EventContext:
+    """Build a real EventContext from a trigger time (mirrors ClipBuilder)."""
+    return EventContext(
+        event_id=t.strftime("%H%M%S"),
+        triggered_at=t,
+        window_start=t,
+        window_end=t,
+        monitors=(),
+    )
 
 
 def make_event_service(post_seconds: int = 0, cooldown: int = 30) -> tuple[EventService, MagicMock]:
     """Return an EventService wired to a mock ClipBuilder."""
     clip_builder = MagicMock()
+    clip_builder.snapshot_event.side_effect = _snapshot
     clip_builder.build.return_value = Path("clips/test_event.mp4")
 
     svc = EventService(
@@ -59,9 +72,8 @@ class TestEventServiceScheduler:
         """Clip builder is called once post_seconds timer fires."""
         svc, clip_builder = make_event_service(post_seconds=0, cooldown=0)
         done = threading.Event()
-        original_build = clip_builder.build.side_effect
 
-        def _notify(ts: datetime) -> Path:
+        def _notify(ctx: EventContext) -> Path:
             done.set()
             return Path("clips/ok.mp4")
 
@@ -73,13 +85,13 @@ class TestEventServiceScheduler:
         assert done.wait(timeout=2.0), "ClipBuilder.build was not called within 2s"
         clip_builder.build.assert_called_once()
 
-    def test_clip_builder_receives_trigger_timestamp(self) -> None:
+    def test_clip_builder_receives_event_context(self) -> None:
         svc, clip_builder = make_event_service(post_seconds=0, cooldown=0)
         done = threading.Event()
-        captured: list[datetime] = []
+        captured: list[EventContext] = []
 
-        def _capture(ts: datetime) -> Path:
-            captured.append(ts)
+        def _capture(ctx: EventContext) -> Path:
+            captured.append(ctx)
             done.set()
             return Path("clips/ok.mp4")
 
@@ -90,12 +102,12 @@ class TestEventServiceScheduler:
         after = datetime.now(tz=timezone.utc)
 
         assert len(captured) == 1
-        assert before <= captured[0] <= after
+        assert isinstance(captured[0], EventContext)
+        assert before <= captured[0].triggered_at <= after
 
     def test_exception_in_clip_builder_does_not_crash_service(self) -> None:
         svc, clip_builder = make_event_service(post_seconds=0, cooldown=0)
-        done = threading.Event()
-        clip_builder.build.side_effect = lambda ts: (_ for _ in ()).throw(
+        clip_builder.build.side_effect = lambda ctx: (_ for _ in ()).throw(
             RuntimeError("Simulated failure")
         )
 

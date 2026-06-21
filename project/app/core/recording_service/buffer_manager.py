@@ -39,6 +39,8 @@ class BufferManager:
         # Segments produced before this timestamp have different video dimensions
         # (monitor config changed) and must not be mixed into new clips.
         self._segment_floor: Optional[datetime] = None
+        # Phase-tagged logger (F3 SEGMENT).
+        self._log = logger.bind(phase="SEGMENT")
 
     # ------------------------------------------------------------------
     # Ingestion
@@ -53,7 +55,7 @@ class BufferManager:
         """
         was_update = self._index.upsert(segment)
         if not was_update:
-            logger.info(
+            self._log.info(
                 "Segment indexed: {} | duration={:.1f}s | total={:.0f}s | count={}",
                 segment.path.name,
                 segment.duration_seconds,
@@ -61,7 +63,7 @@ class BufferManager:
                 self._index.count(),
             )
         else:
-            logger.debug(
+            self._log.debug(
                 "Segment finalised: {} | duration={:.1f}s",
                 segment.path.name,
                 segment.duration_seconds,
@@ -83,7 +85,7 @@ class BufferManager:
         clip assembled with ``-f concat -c copy``.
         """
         self._segment_floor = dt
-        logger.info(
+        self._log.info(
             "Segment floor set to {} — clips will only use segments after this time.",
             dt.isoformat(),
         )
@@ -106,12 +108,23 @@ class BufferManager:
             segments = [s for s in segments if s.started_at >= floor]
             dropped = before - len(segments)
             if dropped:
-                logger.debug(
+                self._log.debug(
                     "Filtered {} segment(s) older than monitor-config floor ({}).",
                     dropped,
                     floor.isoformat(),
                 )
         return segments
+
+    def has_finalized_through(self, end: datetime) -> bool:
+        """True if a *finalized* segment covers up to ``end``.
+
+        Used by event clip building (F5) to confirm the post-event window has
+        been fully written before assembling, instead of relying on the
+        in-progress segment whose ``ended_at`` is only an estimate.
+        """
+        return any(
+            s.finalized and s.ended_at >= end for s in self._index.all()
+        )
 
     # ------------------------------------------------------------------
     # Status
@@ -151,7 +164,7 @@ class BufferManager:
         for segment in excess:
             self._storage.delete_segment(segment)
             self._index.remove(segment)
-            logger.info(
+            self._log.info(
                 "Retention: removed old recording {} (keeping {} segments)",
                 segment.path.name,
                 self._retention_count,

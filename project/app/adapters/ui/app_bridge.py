@@ -17,6 +17,7 @@ from app.core.player.player_service import PlayerService
 from app.adapters.ui.log_handler import emitter as log_emitter
 from app.adapters.ui.screenshot_provider import MonitorScreenshotProvider
 from app.core.ports.request_port import ClipRequest, RequestPort
+from app.core.ports.user_config_port import UserConfigPort
 
 
 def _fmt_size(size_bytes: int) -> str:
@@ -74,6 +75,7 @@ class AppBridge(QObject):
         detection_service:  MonitorDetectionService,
         player_service:     PlayerService,
         clips_dir:          Path,
+        user_config_port:   UserConfigPort | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -83,6 +85,7 @@ class AppBridge(QObject):
         self._detection_service = detection_service
         self._player_service    = player_service
         self._clips_dir         = clips_dir
+        self._user_config_port  = user_config_port
 
         # QVideoSink registry — populated by registerVideoSink() called from QML.
         self._video_sinks: dict[int, object] = {}
@@ -107,8 +110,16 @@ class AppBridge(QObject):
         self._preview_revision: int  = 0
 
         # Monitor state — seeded from detection service (already ran detect_now())
+        # and from the persisted clip-selection so the UI matches what
+        # RecordingService was initialised with in main.py (survives restart).
         self._all_monitors: List[MonitorInfo] = detection_service.get_monitors()
-        self._selected_fingerprints: set[str] = set()
+        saved_fps: set[str] = set()
+        if user_config_port is not None:
+            try:
+                saved_fps = set(user_config_port.load().selected_monitor_fingerprints)
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to load saved monitor selection.")
+        self._selected_fingerprints: set[str] = saved_fps
         self._sync_selection()
 
         # Thread-bridge: detection thread → Qt main thread
@@ -176,6 +187,24 @@ class AppBridge(QObject):
         ]
         if selected:
             self._recording_service.change_monitors(selected)
+
+    def _persist_selection(self) -> None:
+        """Persist the clip-selection to user_config.json so it survives restart.
+
+        Load → mutate → save (the same single-source-of-truth pattern as
+        SettingsBridge) to avoid clobbering other persisted preferences.
+        """
+        if self._user_config_port is None:
+            return
+        try:
+            cfg = self._user_config_port.load()
+            cfg.selected_monitor_fingerprints = sorted(self._selected_fingerprints)
+            self._user_config_port.save(cfg)
+            logger.debug(
+                "Persisted monitor selection: {}", cfg.selected_monitor_fingerprints
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Failed to persist monitor selection.")
 
     def _poll(self) -> None:
         recording = self._recording_service.is_recording()
@@ -318,6 +347,7 @@ class AppBridge(QObject):
         else:
             self._selected_fingerprints.add(fingerprint)
         self._apply_clip_selection()
+        self._persist_selection()
         self.monitorsChanged.emit()
 
     @Slot()

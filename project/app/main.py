@@ -430,6 +430,7 @@ def main() -> None:
         detection_service=detection_service,
         player_service=player_service,
         clips_dir=clips_dir,
+        user_config_port=user_config_port,
     )
     # ── Wire detection → recording + UI (bridge is now in scope) ────────
     def _on_monitor_added(monitor: MonitorInfo) -> None:
