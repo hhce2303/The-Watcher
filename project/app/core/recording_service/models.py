@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -39,6 +40,12 @@ class Segment(BaseModel):
     path: Path
     started_at: datetime
     ended_at: datetime
+    # True once the segment's *real* end-time is known — i.e. the next segment
+    # started (or the recorder stopped / a previous run was recovered).  While
+    # False the segment is still in progress and ``ended_at`` is only an estimate
+    # (started_at + segment_duration).  Event clip building (F5) waits for a
+    # finalized segment covering the post-event window before assembling.
+    finalized: bool = False
 
     @computed_field
     @property
@@ -58,3 +65,22 @@ class Event(BaseModel):
 
     triggered_at: datetime
     source: str = "manual"
+
+
+@dataclass(frozen=True)
+class EventContext:
+    """Immutable snapshot of an event, taken at *trigger time* (pipeline F5).
+
+    Captures WHICH monitors were selected and the exact clip window at the
+    moment the event was accepted.  Building the clip from this snapshot makes
+    the result deterministic even if the user changes the monitor selection
+    during the post-event window, and gives every log line in the build branch
+    a stable ``event_id`` for end-to-end correlation.
+    """
+
+    event_id: str
+    triggered_at: datetime
+    window_start: datetime
+    window_end: datetime
+    monitors: tuple[MonitorInfo, ...]
+    requested_by: str = "manual"
