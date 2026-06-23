@@ -819,6 +819,7 @@ Rectangle {
         function onExportProgress(f) { root.exporting = true; root.exportPct = Math.round(f * 100) }
         function onExportFinished(p) { root.exporting = false; root.exportPct = 100; root.exportMsg = "✓ Exportado" }
         function onExportFailed(m)   { root.exporting = false; root.exportMsg = "✗ " + m }
+        function onLoadNotice(m)     { root.exporting = false; root.exportMsg = m }
     }
 
     // When a clip is loaded by anything other than a reel selection (NAS

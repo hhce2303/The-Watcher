@@ -31,6 +31,7 @@ class EditorBridge(QObject):
     exportProgress  = Signal(float)   # 0.0 – 1.0
     exportFinished  = Signal(str)     # output path
     exportFailed    = Signal(str)     # human-readable error
+    loadNotice      = Signal(str)     # human-readable load result (skips/failures)
 
     def __init__(
         self,
@@ -112,21 +113,39 @@ class EditorBridge(QObject):
         that would fail export. Returns the index of the first clip added, or
         ``-1`` if nothing was added.
         """
+        items = list(urls or [])
+        requested = len(items)
+        skipped: list[str] = []
         first = -1
-        for raw in urls or []:
+        added = 0
+        for raw in items:
             path = self._to_local_path(raw)
             if not path:
+                skipped.append(str(raw))
                 continue
             dur = self._probe_duration(path)
             if dur <= 0:
                 logger.warning("[editor] skipping un-probeable / zero-length file: {}", path)
+                skipped.append(path.name)
                 continue
             idx = self._timeline.add(ClipEntry(path, dur))
+            added += 1
             if first < 0:
                 first = idx
             logger.debug("[editor] +file {} ({:.1f}s)", path.name, dur)
-        if first >= 0:
+        if added:
             self.timelineChanged.emit()
+        # Tell the user what happened — never fail silently on a picked file.
+        if requested and skipped:
+            if added == 0:
+                self.loadNotice.emit(
+                    "No se pudo cargar ningún archivo (formato no compatible o ilegible)."
+                )
+            else:
+                shown = ", ".join(skipped[:3]) + ("…" if len(skipped) > 3 else "")
+                self.loadNotice.emit(
+                    f"{added} de {requested} clips cargados · {len(skipped)} omitidos: {shown}"
+                )
         return first
 
     @staticmethod

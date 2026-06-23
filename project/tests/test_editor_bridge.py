@@ -130,6 +130,28 @@ class TestAddFilesFromUrls:
         first = b.addFilesFromUrls([r"C:\clips\a.mp4"])
         assert first == 0 and b.count == 1
 
+    def test_partial_skip_emits_load_notice(self, qt_app) -> None:
+        insp = self._Inspector({"good.mp4": 5.0})  # bad.mp4 unprobeable
+        b = EditorBridge(inspector=insp)
+        notices: list = []
+        b.loadNotice.connect(notices.append)
+        b.addFilesFromUrls(["file:///C:/x/good.mp4", "file:///C:/x/bad.mp4"])
+        assert notices and "1 de 2" in notices[0] and "bad.mp4" in notices[0]
+
+    def test_all_invalid_emits_clear_notice(self, qt_app) -> None:
+        b = EditorBridge(inspector=self._Inspector({}))
+        notices: list = []
+        b.loadNotice.connect(notices.append)
+        b.addFilesFromUrls(["file:///C:/x/nope.mp4"])
+        assert notices and "ningún archivo" in notices[0]
+
+    def test_all_valid_no_notice(self, qt_app) -> None:
+        b = EditorBridge(inspector=self._Inspector({"a.mp4": 5.0, "b.mp4": 6.0}))
+        notices: list = []
+        b.loadNotice.connect(notices.append)
+        b.addFilesFromUrls(["file:///C:/x/a.mp4", "file:///C:/x/b.mp4"])
+        assert notices == []  # all good → no nagging
+
 
 class TestLocate:
     def test_locate_returns_mapping(self, bridge: EditorBridge) -> None:
