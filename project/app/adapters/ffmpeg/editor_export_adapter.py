@@ -17,6 +17,7 @@ from typing import Callable, List, Optional
 from loguru import logger
 
 from app.core.editor.models import EditTimeline
+from app.core.ports.clip_inspector_port import ClipInspectorPort
 from app.core.ports.editor_export_port import EditorExportPort
 from app.core.ports.segment_compiler_port import SegmentCompilerPort
 
@@ -28,9 +29,44 @@ class FFmpegEditorExportAdapter(EditorExportPort):
         self,
         segment_compiler: SegmentCompilerPort,
         work_dir: Optional[Path] = None,
+        inspector: Optional[ClipInspectorPort] = None,
     ) -> None:
         self._compiler = segment_compiler
         self._work_dir = Path(work_dir) if work_dir else None
+        # Optional: used to refuse a multi-clip concat whose sources have
+        # incompatible codec/resolution. Stream-copy concat silently produces a
+        # broken/truncated file in that case, so we catch it before exporting.
+        self._inspector = inspector
+
+    def _assert_concat_compatible(self, clips: list) -> None:
+        """Raise ValueError if the multi-clip sources can't be stream-copy joined.
+
+        The FFmpeg concat demuxer with ``-c copy`` requires every input to share
+        codec + resolution; otherwise it emits a corrupt, short file with no
+        error. We turn that silent corruption into an actionable message.
+        """
+        if self._inspector is None or len(clips) <= 1:
+            return
+        sigs: dict[str, tuple] = {}
+        for c in clips:
+            try:
+                v = self._inspector.inspect(c.source_path).video_stream
+            except Exception:  # noqa: BLE001 — probe failure shouldn't block; concat will surface it
+                logger.warning("[export] could not probe {} for compat check", c.source_path)
+                continue
+            sigs[c.source_path.name] = (
+                (v.codec, v.width, v.height) if v else (None, None, None)
+            )
+        distinct = set(sigs.values())
+        if len(distinct) > 1:
+            detail = "; ".join(
+                f"{name}: {codec or '?'} {w or '?'}x{h or '?'}"
+                for name, (codec, w, h) in sigs.items()
+            )
+            raise ValueError(
+                "Los clips tienen códecs o resoluciones distintos y no se pueden "
+                "unir sin reconvertir. Usa clips del mismo formato. Detalle: " + detail
+            )
 
     def export(
         self,
@@ -63,10 +99,13 @@ class FFmpegEditorExportAdapter(EditorExportPort):
             logger.info("[export] Done: {}", output_path.name)
             return output_path
 
-        # Multi-clip: trim each to a part, then concatenate the parts losslessly.
+        # Multi-clip: refuse incompatible sources up front (stream-copy concat
+        # would otherwise emit a silently-corrupt file), then trim each to a part
+        # and concatenate the parts losslessly.
         # NOTE (R-5 enhancement): when frame-exact cuts are required, the boundary
         # GOP of each part should be re-encoded here before concatenation
         # (ADR-0002). The copy path below is lossless but cuts on keyframes.
+        self._assert_concat_compatible(clips)
         own_workdir = self._work_dir is None
         work = self._work_dir or Path(tempfile.mkdtemp(prefix="watcher_export_"))
         work.mkdir(parents=True, exist_ok=True)

@@ -33,10 +33,56 @@ def _timeline(*durs: tuple[float, float, float]) -> EditTimeline:
     return t
 
 
+def _stream(codec: str, w: int, h: int):
+    from types import SimpleNamespace
+    return SimpleNamespace(video_stream=SimpleNamespace(codec=codec, width=w, height=h))
+
+
+class _FakeInspector:
+    """Returns a per-filename (codec, w, h) signature for the compat guard."""
+
+    def __init__(self, by_name: dict) -> None:
+        self._by_name = by_name
+
+    def inspect(self, path: Path):
+        return self._by_name[path.name]
+
+
 def test_empty_timeline_raises(tmp_path: Path) -> None:
     adapter = FFmpegEditorExportAdapter(_mock_compiler())
     with pytest.raises(ValueError):
         adapter.export(EditTimeline(), tmp_path / "out.mp4")
+
+
+def test_mismatched_streams_rejected_before_concat(tmp_path: Path) -> None:
+    comp = _mock_compiler()
+    insp = _FakeInspector({
+        "clip0.mp4": _stream("hevc", 1920, 1080),
+        "clip1.mp4": _stream("h264", 1280, 720),
+    })
+    adapter = FFmpegEditorExportAdapter(comp, inspector=insp)
+    with pytest.raises(ValueError, match="códecs o resoluciones distintos"):
+        adapter.export(_timeline((10, 0, 4), (10, 0, 4)), tmp_path / "out.mp4")
+    comp.compile.assert_not_called()  # refused before doing any ffmpeg work
+
+
+def test_matching_streams_allowed(tmp_path: Path) -> None:
+    comp = _mock_compiler()
+    insp = _FakeInspector({
+        "clip0.mp4": _stream("hevc", 1920, 1080),
+        "clip1.mp4": _stream("hevc", 1920, 1080),
+    })
+    adapter = FFmpegEditorExportAdapter(comp, work_dir=tmp_path / "w", inspector=insp)
+    adapter.export(_timeline((10, 0, 4), (10, 0, 4)), tmp_path / "out.mp4")
+    assert comp.compile.call_count == 3  # 2 trims + 1 concat
+
+
+def test_no_inspector_skips_compat_check(tmp_path: Path) -> None:
+    # Backward compatible: without an inspector the guard is a no-op.
+    comp = _mock_compiler()
+    adapter = FFmpegEditorExportAdapter(comp, work_dir=tmp_path / "w")
+    adapter.export(_timeline((10, 0, 4), (10, 0, 4)), tmp_path / "out.mp4")
+    assert comp.compile.call_count == 3
 
 
 def test_single_clip_one_compile(tmp_path: Path) -> None:
