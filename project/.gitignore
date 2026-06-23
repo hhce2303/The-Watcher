@@ -1,5 +1,4 @@
-# Claude
-.claude
+
 # Python
 __pycache__/
 *.py[cod]
@@ -32,26 +31,5 @@ segments/
 *.mkv
 *.avi
 
-# Graphify
-.graphify/
-graphify-out/
-
-# pencil
-.pencil/
-
-# Agents
-.agents/
-.claude
-.vscode/
-# IDEs
-.idea/
-.vscode/
-# OS files
-.DS_Store
-Thumbs.db
-
-#test
-test/
-
-#segments
-.segments/
+# OneDrive conflict copies (multi-PC sync) — e.g. Main-DESKTOP-P84Q52M.qml
+*-DESKTOP-*

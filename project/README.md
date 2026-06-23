@@ -336,6 +336,17 @@ Installs to `%LOCALAPPDATA%\The Watcher`. Optionally enables auto-start at Windo
 | M10 | Clip request system (WebSocket IT↔Supervisor, outbox/inbox UI) | Done |
 | M11 | Clip browser with UNC/NAS support | Done |
 | M12 | Combined multi-monitor grid clip + hourly rolling raw clips | Done |
+| M13 | Editing tools (multi-clip evidence-reel timeline, trim, spatial zoom, lossless fullscreen, smart export) | Planned |
+| M14 | Native Rust segment-compilation engine (PyO3/maturin, lossless TS→MP4 remux/concat/trim) behind `SegmentCompilerPort`, FFmpeg fallback | Planned |
+
+---
+
+## Future Scalability
+
+The editing tab is being designed with seams toward a future YOLO-based event-detection +
+analytics pipeline (decoupled inference, `DetectorPort` / `EventStorePort`, event sidecars,
+timeline markers — Frigate-style). Goals, traceability matrix, ADRs and the phased roadmap live in
+[`docs/editing/`](docs/editing/) (start with [`docs/editing/roadmap.md`](docs/editing/roadmap.md)).
 
 ---
 
