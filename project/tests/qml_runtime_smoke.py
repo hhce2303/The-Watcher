@@ -32,7 +32,7 @@ if _PLATFORMS.exists():
 # Make the app package importable (project/ root).
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot  # noqa: E402
+from PySide6.QtCore import Property, QMetaObject, Q_ARG, Qt, QObject, QUrl, Signal, Slot  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 from PySide6.QtQml import QQmlComponent, QQmlEngine  # noqa: E402
 
@@ -107,6 +107,15 @@ def main() -> int:
         objects.append(obj)
 
     app.processEvents()
+
+    # Exercise the multi-clip reel↔editor path (the closest thing to a click in
+    # a headless harness): open each reel clip and confirm no JS/binding error.
+    editor = objects[-1]
+    if editor is not None:
+        for i in (0, 1):
+            QMetaObject.invokeMethod(editor, "openReelClip",
+                                     Qt.DirectConnection, Q_ARG("QVariant", i))
+            app.processEvents()
 
     relevant = [w for w in warnings if any(m in w for m in _ERR_MARKERS)]
     print(f"\nRELEVANT_WARNINGS={len(relevant)}")

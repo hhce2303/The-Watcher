@@ -58,6 +58,17 @@ Rectangle {
     // clear the selection and restored marks won't echo back onto the clip.
     property bool   _openingReel: false
     property bool   _suspendMarkSync: false
+
+    // ── Multi-clip sequence state (B) ──────────────────────────────────────
+    // The big timeline renders the whole reel end-to-end; these track WHERE the
+    // open clip sits in global reel time so one MediaPlayer can drive a global
+    // playhead and auto-advance across clips.
+    property real   selClipStartGlobal: 0   // global start (s) of the open reel clip
+    property real   selClipInSecs:      0   // open clip's IN  (s in source)
+    property real   selClipOutSecs:     0   // open clip's OUT (s in source)
+    property real   reelElapsed:        0   // global seconds elapsed across the reel
+    property int    _pendingPlayIndex: -1   // clip awaiting media-load to resume playback
+
     property bool   exporting: false
     property int    exportPct: 0
     property string exportMsg: ""
@@ -118,6 +129,8 @@ Rectangle {
         var dur = md.sourceDuration
         root.inMark  = dur > 0 ? md.inPoint  / dur : 0.0
         root.outMark = dur > 0 ? md.outPoint / dur : 1.0
+        root._recomputeSelGlobals()
+        root.reelElapsed = root.selClipStartGlobal
         root._openingReel = false
         root._suspendMarkSync = false
     }
@@ -125,6 +138,21 @@ Rectangle {
         var list = EditorBridge.clips
         if (i < 0 || i >= list.length) return
         root.loadReelClip(list[i], i)
+    }
+    // Recompute where the open clip sits in global reel time (its start offset
+    // and its IN/OUT in source seconds). Kept in sync on select + on every trim.
+    function _recomputeSelGlobals() {
+        var list = EditorBridge.clips
+        var i = root.reelSelected
+        if (i < 0 || i >= list.length) {
+            root.selClipStartGlobal = 0; root.selClipInSecs = 0; root.selClipOutSecs = 0
+            return
+        }
+        var s = 0
+        for (var k = 0; k < i; k++) s += list[k].trimmedDuration
+        root.selClipStartGlobal = s
+        root.selClipInSecs  = list[i].inPoint
+        root.selClipOutSecs = list[i].outPoint
     }
     // Live-apply mark edits to the clip currently open from the reel.
     function _syncSelectedTrim() {
@@ -155,10 +183,44 @@ Rectangle {
         videoOutput: videoOut
         audioOutput: AudioOutput { id: audioOut }
         onPositionChanged: {
-            if (playbackState === MediaPlayer.PlayingState
-                && root.outMark < 1.0 && duration > 0
-                && position >= root.outMark * duration) {
+            var localSecs = position / 1000
+
+            // Global playhead: where we are across the WHOLE reel. When a reel
+            // clip is open, offset the local time by the clip's start; otherwise
+            // (single-clip preview) the global position is just the local time.
+            if (root.reelSelected >= 0)
+                root.reelElapsed = root.selClipStartGlobal
+                                 + Math.max(0, localSecs - root.selClipInSecs)
+            else
+                root.reelElapsed = localSecs
+
+            if (playbackState !== MediaPlayer.PlayingState || duration <= 0)
+                return
+
+            // Reel clip open: stop at its OUT, then auto-advance to the next clip
+            // so play() traverses the whole sequence (B2).
+            if (root.reelSelected >= 0) {
+                if (localSecs >= root.selClipOutSecs - 0.04) {
+                    var next = root.reelSelected + 1
+                    if (next < EditorBridge.count) {
+                        root._pendingPlayIndex = next   // resume after media loads
+                        root.openReelClip(next)
+                    } else {
+                        pause()
+                    }
+                }
+            // Single-clip preview: pause at the editing OUT mark (legacy).
+            } else if (root.outMark < 1.0 && position >= root.outMark * duration) {
                 pause()
+            }
+        }
+        // When the next clip's media is ready, seek to its IN and resume — this
+        // is what makes the playhead cross clip boundaries during reel playback.
+        onMediaStatusChanged: {
+            if (mediaStatus === MediaPlayer.LoadedMedia && root._pendingPlayIndex >= 0) {
+                player.position = root.selClipInSecs * 1000
+                player.play()
+                root._pendingPlayIndex = -1
             }
         }
     }
@@ -565,7 +627,10 @@ Rectangle {
                             Rectangle { width: 1; height: 4; color: W.Tokens.borderSubtle
                                         Layout.alignment: Qt.AlignHCenter }
                             Text {
-                                text: root.fmt(index / root.tickCount).substring(0, 5)
+                                // Sequence view → global reel time; else single-clip time.
+                                text: EditorBridge.count > 0
+                                      ? root.fmtSecs((index / root.tickCount) * EditorBridge.totalDuration)
+                                      : root.fmt(index / root.tickCount).substring(0, 5)
                                 color: W.Tokens.textDim
                                 font.family: W.Tokens.mono
                                 font.pixelSize: 10; font.letterSpacing: 0.4
@@ -610,77 +675,139 @@ Rectangle {
                     radius: W.Tokens.rSm
                 }
 
-                // Selected range background
-                Rectangle {
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    x: root.inMark * parent.width
-                    width: (root.outMark - root.inMark) * parent.width
-                    color: Qt.rgba(W.Tokens.accentPrimary.r,
-                                   W.Tokens.accentPrimary.g,
-                                   W.Tokens.accentPrimary.b, 0.12)
-                }
+                // ── Single-clip surface — used only while the reel is empty ──
+                // (lets you trim a freshly loaded clip before adding it with ＋)
+                Item {
+                    anchors.fill: parent
+                    visible: EditorBridge.count === 0
 
-                // Played progress — real position fill (0 → playhead).
-                Rectangle {
-                    anchors.top: parent.top; anchors.bottom: parent.bottom
-                    anchors.margins: 1
-                    x: 1
-                    width: Math.max(0, root.playhead * (trackBg.width - 2))
-                    color: Qt.rgba(W.Tokens.accentMonitor.r, W.Tokens.accentMonitor.g,
-                                   W.Tokens.accentMonitor.b, 0.16)
-                }
-
-                // Selected range borders (In/Out markers)
-                Rectangle {
-                    anchors.top: parent.top; anchors.bottom: parent.bottom
-                    x: root.inMark * parent.width
-                    width: 2
-                    color: W.Tokens.accentPrimary
-                    Rectangle { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter
-                                width: 8; height: 8; radius: 2; color: W.Tokens.accentPrimary }
-                }
-                Rectangle {
-                    anchors.top: parent.top; anchors.bottom: parent.bottom
-                    x: root.outMark * parent.width - 2
-                    width: 2
-                    color: W.Tokens.accentPrimary
-                    Rectangle { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter
-                                width: 8; height: 8; radius: 2; color: W.Tokens.accentPrimary }
-                }
-
-                // Playhead
-                Rectangle {
-                    anchors { top: parent.top; bottom: parent.bottom }
-                    x: root.playhead * parent.width - 1
-                    width: 2
-                    color: "#FFFFFF"
-                    
-                    // Glow effect
-                    Rectangle {
-                        anchors.centerIn: parent
-                        width: 6; height: parent.height
-                        color: Qt.rgba(255, 255, 255, 0.15)
+                    Rectangle {   // selected IN..OUT range
+                        anchors.top: parent.top; anchors.bottom: parent.bottom
+                        x: root.inMark * parent.width
+                        width: (root.outMark - root.inMark) * parent.width
+                        color: Qt.rgba(W.Tokens.accentPrimary.r, W.Tokens.accentPrimary.g,
+                                       W.Tokens.accentPrimary.b, 0.12)
                     }
-
-                    // Playhead handle
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        anchors.top: parent.top
-                        anchors.topMargin: -6
-                        width: 12; height: 12
-                        color: "#FFFFFF"
-                        radius: 3
-                        rotation: 45
-                        border.color: Qt.rgba(0, 0, 0, 0.5)
-                        border.width: 1
+                    Rectangle {   // played progress
+                        anchors.top: parent.top; anchors.bottom: parent.bottom
+                        anchors.margins: 1; x: 1
+                        width: Math.max(0, root.playhead * (trackBg.width - 2))
+                        color: Qt.rgba(W.Tokens.accentMonitor.r, W.Tokens.accentMonitor.g,
+                                       W.Tokens.accentMonitor.b, 0.16)
+                    }
+                    Rectangle {   // IN marker
+                        anchors.top: parent.top; anchors.bottom: parent.bottom
+                        x: root.inMark * parent.width; width: 2; color: W.Tokens.accentPrimary
+                        Rectangle { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter
+                                    width: 8; height: 8; radius: 2; color: W.Tokens.accentPrimary }
+                    }
+                    Rectangle {   // OUT marker
+                        anchors.top: parent.top; anchors.bottom: parent.bottom
+                        x: root.outMark * parent.width - 2; width: 2; color: W.Tokens.accentPrimary
+                        Rectangle { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter
+                                    width: 8; height: 8; radius: 2; color: W.Tokens.accentPrimary }
+                    }
+                    Rectangle {   // playhead
+                        anchors { top: parent.top; bottom: parent.bottom }
+                        x: root.playhead * parent.width - 1; width: 2; color: "#FFFFFF"
+                        Rectangle { anchors.centerIn: parent; width: 6; height: parent.height
+                                    color: Qt.rgba(255, 255, 255, 0.15) }
+                    }
+                    TapHandler {
+                        onTapped: root.seekFraction(Math.max(0, Math.min(1, point.position.x / trackBg.width)))
                     }
                 }
 
-                TapHandler {
-                    onTapped: {
-                        var f = Math.max(0, Math.min(1, point.position.x / trackBg.width))
-                        root.seekFraction(f)
+                // ── Sequence surface — the whole reel as one multi-clip track ──
+                // Every clip is a block sized by its trimmed duration, laid
+                // end-to-end. A single global playhead crosses all of them.
+                Item {
+                    anchors.fill: parent
+                    visible: EditorBridge.count > 0
+
+                    Row {
+                        id: seqRow
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        spacing: 0
+                        Repeater {
+                            model: EditorBridge.clips
+                            delegate: Rectangle {
+                                id: seqCell
+                                required property var modelData
+                                required property int index
+                                width: (EditorBridge.totalDuration > 0
+                                        ? modelData.trimmedDuration / EditorBridge.totalDuration : 0) * seqRow.width
+                                height: seqRow.height
+                                clip: true
+                                color: index === root.reelSelected
+                                       ? Qt.rgba(W.Tokens.accentPrimary.r, W.Tokens.accentPrimary.g,
+                                                 W.Tokens.accentPrimary.b, 0.22)
+                                       : W.Tokens.bgSurface
+                                border.width: 1
+                                border.color: index === root.reelSelected
+                                              ? W.Tokens.accentPrimary : W.Tokens.borderBase
+
+                                // Played fill inside the open clip's block.
+                                Rectangle {
+                                    visible: seqCell.index === root.reelSelected
+                                    anchors { top: parent.top; bottom: parent.bottom; left: parent.left }
+                                    anchors.margins: 1
+                                    width: {
+                                        var d = root.selClipOutSecs - root.selClipInSecs
+                                        if (d <= 0) return 0
+                                        var f = Math.max(0, Math.min(1,
+                                            (root.reelElapsed - root.selClipStartGlobal) / d))
+                                        return f * (seqCell.width - 2)
+                                    }
+                                    color: Qt.rgba(W.Tokens.accentMonitor.r, W.Tokens.accentMonitor.g,
+                                                   W.Tokens.accentMonitor.b, 0.18)
+                                }
+                                Column {
+                                    anchors.fill: parent; anchors.margins: 5; spacing: 2; clip: true
+                                    Text { width: parent.width; elide: Text.ElideRight
+                                           text: (seqCell.index + 1) + ". " + seqCell.modelData.fileName
+                                           color: W.Tokens.textPrimary; font.family: W.Tokens.mono
+                                           font.pixelSize: 10; font.weight: Font.DemiBold }
+                                    Text { text: root.fmtSecs(seqCell.modelData.trimmedDuration)
+                                           color: W.Tokens.textMuted; font.family: W.Tokens.mono; font.pixelSize: 10 }
+                                }
+                                // Boundary divider on the right edge.
+                                Rectangle {
+                                    anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
+                                    width: 1; color: W.Tokens.bgBase
+                                    visible: seqCell.index < EditorBridge.count - 1
+                                }
+                                // Tap a block to open it; tap the open block to seek within it.
+                                TapHandler {
+                                    id: seqTap
+                                    onTapped: {
+                                        if (root.reelSelected !== seqCell.index) {
+                                            root.loadReelClip(seqCell.modelData, seqCell.index)
+                                        } else if (player.duration > 0) {
+                                            var lf = Math.max(0, Math.min(1, seqTap.point.position.x / seqCell.width))
+                                            player.position = (seqCell.modelData.inPoint
+                                                + lf * seqCell.modelData.trimmedDuration) * 1000
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Global playhead across the entire reel.
+                    Rectangle {
+                        visible: EditorBridge.totalDuration > 0
+                        anchors { top: parent.top; bottom: parent.bottom }
+                        x: Math.max(0, Math.min(1, root.reelElapsed / EditorBridge.totalDuration))
+                           * trackBg.width - 1
+                        width: 2; color: "#FFFFFF"
+                        Rectangle { anchors.centerIn: parent; width: 6; height: parent.height
+                                    color: Qt.rgba(255, 255, 255, 0.15) }
+                        Rectangle { anchors.horizontalCenter: parent.horizontalCenter; anchors.top: parent.top
+                                    anchors.topMargin: -6; width: 12; height: 12; color: "#FFFFFF"
+                                    radius: 3; rotation: 45
+                                    border.color: Qt.rgba(0, 0, 0, 0.5); border.width: 1 }
                     }
                 }
             }
@@ -820,6 +947,9 @@ Rectangle {
         function onExportFinished(p) { root.exporting = false; root.exportPct = 100; root.exportMsg = "✓ Exportado" }
         function onExportFailed(m)   { root.exporting = false; root.exportMsg = "✗ " + m }
         function onLoadNotice(m)     { root.exporting = false; root.exportMsg = m }
+        // Trims/reorders change clip durations → keep the open clip's global
+        // offset and the sequence layout in sync.
+        function onTimelineChanged()  { root._recomputeSelGlobals() }
     }
 
     // When a clip is loaded by anything other than a reel selection (NAS
