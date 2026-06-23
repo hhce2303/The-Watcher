@@ -39,12 +39,17 @@ class EventService:
         cooldown_seconds: int = 30,
         retry_delay_seconds: int = 30,
         on_clip_failed: Optional[Callable[[str], None]] = None,
+        on_clip_built: Optional[Callable[["EventContext", Path], None]] = None,
     ) -> None:
         self._clip_builder = clip_builder
         self._post_seconds = post_seconds
         self._cooldown_seconds = cooldown_seconds
         self._retry_delay_seconds = retry_delay_seconds
         self._on_clip_failed = on_clip_failed
+        # Fired after a successful build with (ctx, output_path). Used to persist
+        # the event (EventStore + sidecar) so it appears as a timeline marker
+        # (Fase 1). Never raises into the build path.
+        self._on_clip_built = on_clip_built
         self._last_event_at: Optional[datetime] = None
         self._lock = threading.Lock()
         self._pending_timers: list[threading.Timer] = []
@@ -135,6 +140,11 @@ class EventService:
             output = self._clip_builder.build(ctx)
             if output:
                 log.info("Clip created: {}", output)
+                if self._on_clip_built is not None:
+                    try:
+                        self._on_clip_built(ctx, output)
+                    except Exception:  # noqa: BLE001
+                        log.exception("on_clip_built callback raised (ignored).")
             else:
                 log.error(
                     "Clip build returned no output for event at {} (attempt {}).",

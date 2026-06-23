@@ -675,7 +675,8 @@ Item {
 
     component NavBtn: Rectangle {
         required property string label
-        required property bool   enabled
+        // `enabled` is the built-in Item property — set it from call sites; do
+        // not redeclare it (that shadows the base member and warns at load).
         signal activated
         width: 28; height: 28; radius: W.Tokens.rXs
         color: nb.hovered && enabled ? Qt.rgba(1,1,1,0.08) : Qt.rgba(1,1,1,0.04)

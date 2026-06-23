@@ -70,6 +70,11 @@ from app.adapters.ffmpeg.clip_inspector_adapter import FFprobeClipInspectorAdapt
 from app.adapters.ffmpeg.mp4_converter_adapter import FFmpegMp4ConverterAdapter
 from app.adapters.ffmpeg.hourly_recording_builder import HourlyRecordingBuilder
 from app.adapters.ffmpeg.combined_clip_builder import CombinedClipBuilder
+from app.adapters.ffmpeg.editor_export_adapter import FFmpegEditorExportAdapter
+from app.adapters.native import make_segment_compiler
+from app.adapters.storage.sqlite_event_store import SqliteEventStoreAdapter
+from app.core.analytics.manual_event import analytic_event_from_context
+from app.core.analytics.sidecar import write_sidecar
 from app.adapters.filesystem.storage_adapter import FilesystemStorageAdapter
 from app.adapters.filesystem.user_config_adapter import JsonUserConfigAdapter
 from app.adapters.monitor.screeninfo_adapter import ScreeninfoMonitorAdapter
@@ -310,6 +315,7 @@ def main() -> None:
     event_service: Optional[EventService] = None
     disk_monitor: Optional[DiskSpaceMonitor] = None
     health_service: Optional[RecordingHealthService] = None
+    event_store: Optional[SqliteEventStoreAdapter] = None
 
     if is_recording_role(user_config.role):
         combined_builder = CombinedClipBuilder(
@@ -363,11 +369,24 @@ def main() -> None:
             timestamp_adapter=FFmpegTimestampAdapter(codec=settings.video_codec),
         )
 
+        # ── Event persistence (Fase 1) — manual events become queryable
+        # AnalyticEvents + a per-clip sidecar so the editor can paint markers.
+        event_store = SqliteEventStoreAdapter(settings.segment_dir.parent / "events.db")
+
+        def _persist_manual_event(ctx, output_path) -> None:
+            ev = analytic_event_from_context(ctx, output_path)
+            event_store.add(ev)
+            try:
+                write_sidecar(output_path, [ev])
+            except OSError:
+                logger.warning("Could not write event sidecar for {}", output_path)
+
         event_service = EventService(
             clip_builder=clip_builder,
             post_seconds=settings.event_post_seconds,
             cooldown_seconds=settings.event_cooldown_seconds,
             retry_delay_seconds=settings.clip_retry_delay_seconds,
+            on_clip_built=_persist_manual_event,
         )
 
         disk_monitor = DiskSpaceMonitor(
@@ -457,6 +476,7 @@ def main() -> None:
     from PySide6.QtCore import QUrl, QTimer             # noqa: PLC0415
     from app.adapters.ui.app_bridge import AppBridge    # noqa: PLC0415
     from app.adapters.ui.settings_bridge import SettingsBridge  # noqa: PLC0415
+    from app.adapters.ui.editor_bridge import EditorBridge  # noqa: PLC0415
     from app.adapters.ui.tray_icon import TrayIcon      # noqa: PLC0415
 
     app = QApplication(sys.argv)   # keep QApplication — QSystemTrayIcon requires it
@@ -465,6 +485,14 @@ def main() -> None:
     # ── Player subsystem ──────────────────────────────────────────────
     inspector      = FFprobeClipInspectorAdapter()
     player_service = PlayerService(inspector=inspector)
+
+    # ── Editor subsystem (Fase 0) — evidence-reel timeline + export ────
+    # Rust segment engine when available, FFmpeg fallback otherwise (ADR-0006).
+    segment_compiler = make_segment_compiler(codec=settings.video_codec)
+    editor_export    = FFmpegEditorExportAdapter(segment_compiler)
+    editor_bridge    = EditorBridge(
+        export_port=editor_export, clips_dir=clips_dir, inspector=inspector
+    )
 
     # ── Bridge objects ────────────────────────────────────────────────
     bridge = AppBridge(
@@ -578,6 +606,7 @@ def main() -> None:
     engine.addImageProvider("monitor_preview", bridge.screenshot_provider)
     engine.rootContext().setContextProperty("AppBridge", bridge)
     engine.rootContext().setContextProperty("SettingsBridge", settings_bridge)
+    engine.rootContext().setContextProperty("EditorBridge", editor_bridge)
     qml_path = ui_dir / "Main.qml"
     logger.info("Loading QML: {} (exists={})", qml_path, qml_path.exists())
     engine.load(QUrl.fromLocalFile(str(qml_path.resolve())))

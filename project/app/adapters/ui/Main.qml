@@ -245,6 +245,7 @@ Window {
                 Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: W.Tokens.borderBase }
 
                 RowLayout {
+                    id: heroRow
                     anchors { fill: parent; leftMargin: 16; rightMargin: 12 }
                     spacing: 0
 
@@ -298,7 +299,7 @@ Window {
                     }
                     Connections {
                         target: AppBridge
-                        function onRequestReceived() { parent.itPendingCount = Qt.binding(function() {
+                        function onRequestReceived() { heroRow.itPendingCount = Qt.binding(function() {
                             if (SettingsBridge.role !== "it") return 0
                             var reqs = AppBridge.getInboxRequests()
                             var n = 0
@@ -320,7 +321,7 @@ Window {
                             delegate: Rectangle {
                                 property bool sel: root.activeTab === modelData.idx
                                 visible: root.tabVisible(modelData.idx)
-                                width: row.implicitWidth + 20 + (modelData.idx === 0 && parent.parent.itPendingCount > 0 ? 22 : 0); height: 32
+                                width: row.implicitWidth + 20 + (modelData.idx === 0 && heroRow.itPendingCount > 0 ? 22 : 0); height: 32
                                 radius: W.Tokens.rPill
                                 color: sel ? W.Tokens.accentPrimary : "transparent"
                                 Behavior on color { ColorAnimation { duration: 160 } }
@@ -360,14 +361,14 @@ Window {
                                     }
                                     // IT inbox pending-request badge on Tab 0
                                     Rectangle {
-                                        visible: modelData.idx === 0 && SettingsBridge.role === "it" && parent.parent.parent.parent.parent.itPendingCount > 0
+                                        visible: modelData.idx === 0 && SettingsBridge.role === "it" && heroRow.itPendingCount > 0
                                         anchors.verticalCenter: parent.verticalCenter
                                         width: bTxt.implicitWidth + 8; height: 16; radius: 8
                                         color: "#FBBF24"
                                         Text {
                                             id: bTxt
                                             anchors.centerIn: parent
-                                            text: parent.parent.parent.parent.parent.parent.itPendingCount
+                                            text: heroRow.itPendingCount
                                             color: "#000"
                                             font.family: W.Tokens.mono; font.pixelSize: 9; font.weight: Font.Bold
                                         }

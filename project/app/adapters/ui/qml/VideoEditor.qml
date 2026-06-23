@@ -46,6 +46,22 @@ Rectangle {
         (clipInfo && clipInfo.fps && parseFloat(clipInfo.fps) > 0) ? Math.round(parseFloat(clipInfo.fps)) : 30
     readonly property int tickCount: Math.max(8, Math.round(8 * zoom))
 
+    // Spatial zoom/pan of the picture (R-3b) — lossless up to native resolution.
+    property real picZoom: 1.0
+    property real picPanX: 0.0
+    property real picPanY: 0.0
+
+    // Evidence reel (R-1): selected clip in EditorBridge.clips + export state.
+    property int    reelSelected: -1
+    // Guards for the reel↔editor round-trip (see loadReelClip): true while we
+    // programmatically open a reel clip, so the currentClipPath watcher won't
+    // clear the selection and restored marks won't echo back onto the clip.
+    property bool   _openingReel: false
+    property bool   _suspendMarkSync: false
+    property bool   exporting: false
+    property int    exportPct: 0
+    property string exportMsg: ""
+
     // ── Transport — operate the REAL player ────────────────────────────────
     function togglePlay() {
         if (root.source == "") return
@@ -66,6 +82,61 @@ Rectangle {
     function markOut() { root.outMark = root.playhead; if (root.inMark > root.outMark) root.inMark = 0.0 }
 
     function setZoom(z) { root.zoom = Math.max(1, Math.min(8, z)) }
+
+    // ── Spatial zoom (R-3b) ────────────────────────────────────────────────
+    function resetPicZoom() { root.picZoom = 1.0; root.picPanX = 0.0; root.picPanY = 0.0 }
+    function nudgePicZoom(factor) {
+        root.picZoom = Math.max(1, Math.min(6, root.picZoom * factor))
+        if (root.picZoom <= 1.001) root.resetPicZoom()
+    }
+
+    // ── Evidence reel (R-1, R-5) — via EditorBridge (global context prop) ───
+    // Add the loaded clip to the reel, already trimmed to the current IN/OUT
+    // marks, then select it so further mark edits keep updating it live.
+    function addToReel() {
+        if (AppBridge.currentClipPath === "" || root.duration <= 0) return
+        EditorBridge.addClipTrimmed(AppBridge.currentClipPath, root.duration,
+                                    root.inMark, root.outMark)
+        root.reelSelected = EditorBridge.count - 1
+    }
+    function applyMarksToReel() {
+        // Push the current IN/OUT marks (fractions) onto the selected reel clip.
+        if (root.reelSelected >= 0)
+            EditorBridge.setTrimFraction(root.reelSelected, root.inMark, root.outMark)
+    }
+
+    // Open a reel clip in the preview: load its source, restore its stored
+    // IN/OUT as marks, and select it. The guards stop this round-trip from
+    // clearing the selection (currentClipPath watcher) or echoing the restored
+    // marks straight back onto the clip (_syncSelectedTrim).
+    function loadReelClip(md, idx) {
+        if (!md) return
+        root._suspendMarkSync = true
+        root._openingReel = true
+        AppBridge.loadClip(md.sourcePath)
+        root.reelSelected = idx
+        var dur = md.sourceDuration
+        root.inMark  = dur > 0 ? md.inPoint  / dur : 0.0
+        root.outMark = dur > 0 ? md.outPoint / dur : 1.0
+        root._openingReel = false
+        root._suspendMarkSync = false
+    }
+    function openReelClip(i) {
+        var list = EditorBridge.clips
+        if (i < 0 || i >= list.length) return
+        root.loadReelClip(list[i], i)
+    }
+    // Live-apply mark edits to the clip currently open from the reel.
+    function _syncSelectedTrim() {
+        if (root._suspendMarkSync || root.reelSelected < 0) return
+        EditorBridge.setTrimFraction(root.reelSelected, root.inMark, root.outMark)
+    }
+    onInMarkChanged:  root._syncSelectedTrim()
+    onOutMarkChanged: root._syncSelectedTrim()
+    function toggleFullscreen() {
+        if (fsPlayer.visible) fsPlayer.close()
+        else fsPlayer.showFullScreen()
+    }
 
     // Recenter the timeline viewport on the playhead when zoom changes.
     onZoomChanged: {
@@ -100,6 +171,13 @@ Rectangle {
         return String(mm).padStart(2, "0") + ":"
              + String(ss).padStart(2, "0") + ":"
              + String(ff).padStart(2, "0")
+    }
+
+    // mm:ss from an absolute seconds value (reel durations).
+    function fmtSecs(s) {
+        var t = Math.max(0, Math.floor(s))
+        return String(Math.floor(t / 60)).padStart(2, "0") + ":"
+             + String(t % 60).padStart(2, "0")
     }
 
     // ── Layout ────────────────────────────────────────────────────────────
@@ -232,6 +310,46 @@ Rectangle {
                         anchors.fill: parent
                         fillMode: VideoOutput.PreserveAspectFit
                         visible: root.source != ""
+                        // Spatial zoom/pan (R-3b): scale around centre, then pan.
+                        // Scales the real decoded frame → lossless up to source res.
+                        transform: [
+                            Scale {
+                                origin.x: videoOut.width / 2; origin.y: videoOut.height / 2
+                                xScale: root.picZoom; yScale: root.picZoom
+                            },
+                            Translate { x: root.picPanX; y: root.picPanY }
+                        ]
+                    }
+
+                    // Wheel = zoom, drag = pan (only while zoomed in).
+                    WheelHandler {
+                        target: null
+                        enabled: root.source != ""
+                        onWheel: function(ev) {
+                            root.nudgePicZoom(ev.angleDelta.y > 0 ? 1.12 : 1 / 1.12)
+                        }
+                    }
+                    DragHandler {
+                        target: null
+                        enabled: root.source != "" && root.picZoom > 1.001
+                        property real baseX: 0
+                        property real baseY: 0
+                        onActiveChanged: if (active) { baseX = root.picPanX; baseY = root.picPanY }
+                        onActiveTranslationChanged: {
+                            root.picPanX = baseX + activeTranslation.x
+                            root.picPanY = baseY + activeTranslation.y
+                        }
+                    }
+
+                    // Spatial-zoom badge (top-centre) when zoomed.
+                    Rectangle {
+                        visible: root.picZoom > 1.001
+                        anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 12 }
+                        height: 22; width: zTxt.implicitWidth + 16; radius: W.Tokens.rSm
+                        color: Qt.rgba(0, 0, 0, 0.6)
+                        Text { id: zTxt; anchors.centerIn: parent
+                               text: "ZOOM " + Math.round(root.picZoom * 100) + "%  ·  arrastra para mover"
+                               color: W.Tokens.textPrimary; font.family: W.Tokens.mono; font.pixelSize: 11 }
                     }
 
                     // Diagonal stripes pattern with lower opacity
@@ -383,6 +501,16 @@ Rectangle {
             }
             TransportBtn { glyph: "+"; tip: "Acercar"; onClicked: root.setZoom(root.zoom * 1.5) }
             TransportBtn { glyph: "⤢"; tip: "Ajustar"; onClicked: root.setZoom(1) }
+
+            Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 18
+                        color: W.Tokens.borderBase; Layout.leftMargin: 4 }
+
+            // Reel + view actions (R-1, R-3b, R-4).
+            TransportBtn { glyph: "＋"; tip: "Añadir clip al reel"; onClicked: root.addToReel() }
+            TransportBtn { glyph: "✂"; tip: "Aplicar recorte IN/OUT al clip seleccionado del reel"
+                           onClicked: root.applyMarksToReel() }
+            TransportBtn { glyph: "⛶"; tip: "Pantalla completa"; onClicked: root.toggleFullscreen() }
+            TransportBtn { glyph: "⟲"; tip: "Restablecer zoom de imagen"; onClicked: root.resetPicZoom() }
 
             Item { Layout.fillWidth: true }
 
@@ -559,6 +687,108 @@ Rectangle {
             }
         }
 
+        // ── Reel de evidencia (R-1) — clips añadidos, reordenables ─────
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 98
+            Layout.leftMargin: 18; Layout.rightMargin: 18; Layout.topMargin: 8
+            color: W.Tokens.bgElevated
+            border.color: W.Tokens.borderBase; border.width: 1
+            radius: W.Tokens.rSm
+
+            ColumnLayout {
+                anchors.fill: parent; anchors.margins: 8; spacing: 6
+
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 8
+                    Text { text: "REEL DE EVIDENCIA"
+                           color: W.Tokens.accentMonitor; font.family: W.Tokens.mono
+                           font.pixelSize: 11; font.weight: Font.Bold; font.letterSpacing: 1.4 }
+                    Text { text: EditorBridge.count + " clip(s) · " + root.fmtSecs(EditorBridge.totalDuration)
+                           color: W.Tokens.textMuted; font.family: W.Tokens.mono; font.pixelSize: 11 }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        visible: root.exportMsg !== ""
+                        text: root.exporting ? ("Exportando… " + root.exportPct + "%") : root.exportMsg
+                        color: root.exporting ? W.Tokens.accentPrimary : W.Tokens.textMuted
+                        font.family: W.Tokens.mono; font.pixelSize: 11
+                        elide: Text.ElideRight; Layout.maximumWidth: 220
+                    }
+                    Rectangle {
+                        Layout.preferredHeight: 24
+                        Layout.preferredWidth: exLbl.implicitWidth + 22
+                        radius: W.Tokens.rXs
+                        enabled: EditorBridge.count > 0 && !root.exporting
+                        opacity: enabled ? 1 : 0.4
+                        color: exHov.hovered && enabled
+                               ? Qt.lighter(W.Tokens.accentPrimary, 1.1) : W.Tokens.accentPrimary
+                        HoverHandler { id: exHov }
+                        TapHandler { onTapped: if (parent.enabled) EditorBridge.exportReel() }
+                        Text { id: exLbl; anchors.centerIn: parent; text: "⏏ EXPORTAR REEL"
+                               color: W.Tokens.bgBase; font.family: W.Tokens.sans
+                               font.pixelSize: 11; font.weight: Font.Bold; font.letterSpacing: 0.4 }
+                    }
+                }
+
+                Item {
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    Text {
+                        anchors.centerIn: parent
+                        visible: EditorBridge.count === 0
+                        text: "Carga un clip y pulsa ＋ para añadirlo al reel"
+                        color: W.Tokens.textDim; font.family: W.Tokens.mono; font.pixelSize: 12
+                    }
+                    ListView {
+                        anchors.fill: parent
+                        orientation: ListView.Horizontal
+                        spacing: 6; clip: true
+                        model: EditorBridge.clips
+                        visible: EditorBridge.count > 0
+                        delegate: Rectangle {
+                            id: reelCell
+                            required property var modelData
+                            required property int index
+                            width: Math.max(84, (EditorBridge.totalDuration > 0
+                                   ? modelData.trimmedDuration / EditorBridge.totalDuration : 0) * 360)
+                            height: ListView.view.height
+                            radius: W.Tokens.rXs
+                            color: root.reelSelected === index
+                                   ? Qt.rgba(W.Tokens.accentPrimary.r, W.Tokens.accentPrimary.g,
+                                             W.Tokens.accentPrimary.b, 0.18)
+                                   : W.Tokens.bgSurface
+                            border.color: root.reelSelected === index
+                                          ? W.Tokens.accentPrimary : W.Tokens.borderBase
+                            border.width: 1
+                            TapHandler { onTapped: root.loadReelClip(reelCell.modelData, reelCell.index) }
+
+                            ColumnLayout {
+                                anchors.fill: parent; anchors.margins: 6; spacing: 2
+                                Text { Layout.fillWidth: true
+                                       text: (reelCell.index + 1) + ". " + reelCell.modelData.fileName
+                                       color: W.Tokens.textPrimary; font.family: W.Tokens.mono
+                                       font.pixelSize: 11; elide: Text.ElideRight }
+                                Item { Layout.fillHeight: true }
+                                Text { text: root.fmtSecs(reelCell.modelData.trimmedDuration)
+                                       color: W.Tokens.textMuted; font.family: W.Tokens.mono; font.pixelSize: 10 }
+                            }
+                            Row {
+                                anchors { top: parent.top; right: parent.right; margins: 3 }
+                                spacing: 2
+                                ReelMini { glyph: "‹"
+                                    onActivated: { EditorBridge.moveClip(reelCell.index, reelCell.index - 1)
+                                                   root.reelSelected = Math.max(0, reelCell.index - 1) } }
+                                ReelMini { glyph: "›"
+                                    onActivated: { EditorBridge.moveClip(reelCell.index, reelCell.index + 1)
+                                                   root.reelSelected = reelCell.index + 1 } }
+                                ReelMini { glyph: "✕"; danger: true
+                                    onActivated: { EditorBridge.removeClip(reelCell.index); root.reelSelected = -1 } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Hint bar ──────────────────────────────────────────────────
         RowLayout {
             Layout.fillWidth: true
@@ -580,6 +810,52 @@ Rectangle {
                    color: W.Tokens.textDim
                    font.family: W.Tokens.mono
                    font.pixelSize: 11; font.letterSpacing: 0.4 }
+        }
+    }
+
+    // Export status feedback from EditorBridge (global context property).
+    Connections {
+        target: EditorBridge
+        function onExportProgress(f) { root.exporting = true; root.exportPct = Math.round(f * 100) }
+        function onExportFinished(p) { root.exporting = false; root.exportPct = 100; root.exportMsg = "✓ Exportado" }
+        function onExportFailed(m)   { root.exporting = false; root.exportMsg = "✗ " + m }
+    }
+
+    // When a clip is loaded by anything other than a reel selection (NAS
+    // "Cargar para editar", the file dialog, clearing), drop the reel selection
+    // so subsequent mark edits don't silently re-trim an unrelated reel clip.
+    Connections {
+        target: AppBridge
+        function onCurrentClipPathChanged() {
+            if (!root._openingReel) root.reelSelected = -1
+        }
+    }
+
+    // Lossless fullscreen review window (R-4, ADR-0003).
+    W.FullscreenPlayer {
+        id: fsPlayer
+        sharedPlayer: player
+        inlineOutput: videoOut
+    }
+
+    // ── Local component: tiny reel cell button ────────────────────────────
+    component ReelMini : Rectangle {
+        id: mini
+        property string glyph: ""
+        property bool   danger: false
+        signal activated()
+        width: 16; height: 16; radius: 3
+        color: mh.hovered
+               ? (mini.danger ? Qt.rgba(W.Tokens.accentRecord.r, W.Tokens.accentRecord.g,
+                                        W.Tokens.accentRecord.b, 0.30)
+                              : Qt.rgba(1, 1, 1, 0.12))
+               : Qt.rgba(0, 0, 0, 0.35)
+        HoverHandler { id: mh }
+        TapHandler   { onTapped: mini.activated() }
+        Text {
+            anchors.centerIn: parent; text: mini.glyph
+            color: mini.danger ? W.Tokens.accentRecord : W.Tokens.textMuted
+            font.pixelSize: 11; font.weight: Font.Bold
         }
     }
 

@@ -51,6 +51,7 @@ _FILES = [
     "qml/Tokens.qml",
     "qml/MonitorSelector.qml",
     "qml/ClipBrowser.qml",
+    "qml/FullscreenPlayer.qml",
     "qml/VideoEditor.qml",
     "qml/OutputPanel.qml",
     "qml/ITEditorView.qml",

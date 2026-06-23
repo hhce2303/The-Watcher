@@ -46,3 +46,6 @@ Thumbs.db
 
 # Segments
 .segments/
+
+# OneDrive conflict copies (multi-PC sync) — e.g. setup_env-DESKTOP-P84Q52M.ps1
+*-DESKTOP-*

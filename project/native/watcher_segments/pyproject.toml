@@ -1,0 +1,18 @@
+# maturin build config for the watcher_segments extension module.
+#   Dev build into the active venv:   maturin develop --release
+#   Wheel for packaging:              maturin build --release
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "watcher-segments"
+version = "0.1.0"
+description = "Native segment-compilation engine for The Watcher"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.maturin]
+# The .pyd is imported as `import watcher_segments` from app/adapters/native/.
+module-name = "watcher_segments"
+features = ["pyo3/extension-module"]

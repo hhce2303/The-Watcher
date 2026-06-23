@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import "." as W
 
 // ITEditorView.qml — IT dashboard shell for The Watcher.
@@ -40,12 +41,9 @@ Item {
     property bool freeEdit: false
     readonly property bool editorActive: hasRequest || freeEdit
 
-    // Editor state
+    // Editor state. Playback (playing/playhead) and marks (inMark/outMark) are
+    // owned by the VideoEditor's real MediaPlayer — read them via `videoEditor`.
     property string selectedPath: ""
-    property bool   playing: false
-    property real   playhead: 0.0
-    property real   inMark:  0.0
-    property real   outMark: 1.0
     property string saveState: "idle"           // idle | uploading | done | linked
 
     // Live clock (replaces the old hardcoded timestamp).
@@ -117,9 +115,9 @@ Item {
     // AppBridge.currentClipInfo, which the VideoEditor reflects).
     function loadSelected() {
         if (root.selectedPath === "") return
+        // Triggers currentClipPath/currentClipInfo changes; the VideoEditor's
+        // `source` binding reloads its MediaPlayer (resets playback by itself).
         AppBridge.loadClip(root.selectedPath)
-        root.playing = false
-        root.playhead = 0.0
     }
 
     function exitEditor() {
@@ -139,27 +137,27 @@ Item {
         root.activeView = v
     }
 
-    // ── Playhead animation ──────────────────────────────────────────────────
-    NumberAnimation {
-        id: playAnim
-        target: root; property: "playhead"
-        from: root.inMark; to: root.outMark
-        duration: Math.max(1000, (root.outMark - root.inMark) * 983 * 1000 / 6)
-        loops: Animation.Infinite; running: false
-    }
-    onPlayingChanged: {
-        if (playing) {
-            playAnim.from = root.playhead; playAnim.to = root.outMark
-            playAnim.duration = Math.max(800, (root.outMark - root.playhead) * 983 * 1000 / 6)
-            playAnim.restart()
-        } else { playAnim.stop() }
-    }
-
     // ── Keyboard shortcuts ────────────────────────────────────────────────
-    Shortcut { sequence: "Space"; enabled: root.activeView === "editor"; onActivated: root.playing = !root.playing }
-    Shortcut { sequence: "I";     enabled: root.activeView === "editor"; onActivated: root.inMark  = root.playhead }
-    Shortcut { sequence: "O";     enabled: root.activeView === "editor"; onActivated: root.outMark = root.playhead }
+    // Delegate to the VideoEditor's real transport (it owns the MediaPlayer).
+    Shortcut { sequence: "Space"; enabled: root.activeView === "editor"; onActivated: videoEditor.togglePlay() }
+    Shortcut { sequence: "I";     enabled: root.activeView === "editor"; onActivated: videoEditor.markIn() }
+    Shortcut { sequence: "O";     enabled: root.activeView === "editor"; onActivated: videoEditor.markOut() }
     Shortcut { sequence: "Escape"; onActivated: { if (pinOverlay.visible) pinOverlay.visible = false; else root.notifExpanded = false } }
+
+    // ── Cargar archivos: native multi-select picker → reel/timeline ───────
+    // Loads videos from anywhere on disk (works without the NAS). Each picked
+    // file is probed + appended to the reel; the first one opens in the editor.
+    FileDialog {
+        id: filesDialog
+        title: "Cargar videos para editar"
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["Videos (*.mp4 *.mkv *.mov *.avi *.ts *.m4v *.webm)",
+                      "Todos los archivos (*)"]
+        onAccepted: {
+            var idx = EditorBridge.addFilesFromUrls(selectedFiles)
+            if (idx >= 0) videoEditor.openReelClip(idx)
+        }
+    }
 
     // ── Background + ambient glow ─────────────────────────────────────────
     Rectangle { anchors.fill: parent; color: W.Tokens.bgBase }
@@ -429,13 +427,15 @@ Item {
                         Text { text: "Sin edición activa"; color: W.Tokens.textPrimary
                                font.family: W.Tokens.sans; font.pixelSize: 16; font.weight: Font.DemiBold
                                Layout.alignment: Qt.AlignHCenter }
-                        Text { text: "Acepta una solicitud desde la Cola, o empieza una edición libre y elige el archivo en el NAS."
+                        Text { text: "Carga videos desde tu equipo, acepta una solicitud desde la Cola, o empieza una edición libre y elige el archivo en el NAS."
                                color: W.Tokens.textMuted; font.family: W.Tokens.mono; font.pixelSize: 12
                                horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
                                Layout.maximumWidth: 420; Layout.alignment: Qt.AlignHCenter }
                         RowLayout {
                             Layout.alignment: Qt.AlignHCenter; spacing: 10
-                            ActionButton { text: "Nueva edición libre"; primary: true; onClicked: root.startFreeEdit() }
+                            ActionButton { text: "Cargar archivos"; primary: true
+                                           onClicked: { root.startFreeEdit(); filesDialog.open() } }
+                            ActionButton { text: "Nueva edición libre"; onClicked: root.startFreeEdit() }
                             ActionButton { text: "Ir a la Cola"; onClicked: root.activeView = "cola" }
                         }
                     }
@@ -471,6 +471,10 @@ Item {
                                 color: W.Tokens.textMuted; font.family: W.Tokens.mono; font.pixelSize: 12
                             }
                             ActionButton {
+                                text: "Cargar archivos"
+                                onClicked: filesDialog.open()
+                            }
+                            ActionButton {
                                 visible: root.selectedPath !== ""
                                 text: "Cargar para editar"; primary: true
                                 onClicked: root.loadSelected()
@@ -503,6 +507,7 @@ Item {
                                 }
                                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: W.Tokens.borderBase }
                                 W.VideoEditor {
+                                    id: videoEditor
                                     Layout.fillWidth: true; Layout.fillHeight: true
                                     // Filename from the loaded clip; normalize BOTH separators
                                     // (real paths are UNC backslashes, not "/").
@@ -513,14 +518,11 @@ Item {
                                         return parts[parts.length - 1]
                                     }
                                     clipInfo: AppBridge.currentClipInfo
-                                    playing:  root.playing
-                                    playhead: root.playhead
-                                    inMark:   root.inMark
-                                    outMark:  root.outMark
-                                    onToggled:   root.playing  = !root.playing
-                                    onScrubbed:  function(f) { root.playhead = f }
-                                    onMarkedIn:  function(f) { root.inMark  = f }
-                                    onMarkedOut: function(f) { root.outMark = f }
+                                    // Real media source — UNC/local path → file URL. The editor
+                                    // owns playback (playing/playhead) and the in/out marks.
+                                    source: AppBridge.currentClipPath !== ""
+                                            ? AppBridge.mediaUrl(AppBridge.currentClipPath)
+                                            : ""
                                 }
                                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: W.Tokens.borderBase }
                                 W.OutputPanel {
