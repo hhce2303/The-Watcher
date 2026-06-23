@@ -44,7 +44,9 @@ Item {
     // Editor state. Playback (playing/playhead) and marks (inMark/outMark) are
     // owned by the VideoEditor's real MediaPlayer — read them via `videoEditor`.
     property string selectedPath: ""
-    property string saveState: "idle"           // idle | uploading | done | linked
+    // OneDrive delivery state now lives in AppBridge (oneDriveState); this just
+    // carries the last error message down to the OutputPanel.
+    property string oneDriveError: ""
 
     // Live clock (replaces the old hardcoded timestamp).
     property string nowStr: ""
@@ -55,6 +57,7 @@ Item {
         target: AppBridge
         function onRequestReceived()            { root.refresh() }
         function onRequestStatusChanged(id, st) { root.refresh() }
+        function onOneDriveFailed(msg)          { root.oneDriveError = msg }
     }
 
     Timer {
@@ -107,7 +110,8 @@ Item {
     function startFreeEdit() {
         root.freeEdit = true
         root.selectedPath = ""
-        root.saveState = "idle"
+        root.oneDriveError = ""
+        AppBridge.resetOneDrive()
         root.activeView = "editor"
     }
 
@@ -404,7 +408,16 @@ Item {
                                         SysStat { k: "WS server"; v: "escuchando :" + AppBridge.itServerPort; tone: W.Tokens.accentOk }
                                         SysStat { k: "En cola";   v: "" + root.queueCount() }
                                         SysStat { k: "NAS";       v: "—"; tone: W.Tokens.textDim }
-                                        SysStat { k: "OneDrive";  v: "—"; tone: W.Tokens.textDim }
+                                        SysStat {
+                                            k: "OneDrive"
+                                            v: AppBridge.oneDriveState === "linked"  ? "enlace listo"
+                                             : AppBridge.oneDriveState === "working"  ? "procesando"
+                                             : AppBridge.oneDriveState === "error"    ? "error"
+                                                                                      : "—"
+                                            tone: AppBridge.oneDriveState === "linked" ? W.Tokens.accentOk
+                                                : AppBridge.oneDriveState === "error"  ? W.Tokens.accentRecord
+                                                                                       : W.Tokens.textDim
+                                        }
                                     }
                                 }
                             }
@@ -527,15 +540,21 @@ Item {
                                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: W.Tokens.borderBase }
                                 W.OutputPanel {
                                     Layout.preferredWidth: 340; Layout.fillHeight: true
-                                    saveState: root.saveState
+                                    saveState:  AppBridge.oneDriveState
+                                    destFolder: AppBridge.oneDriveFolder
+                                    shareLink:  AppBridge.oneDriveLink
+                                    errorText:  root.oneDriveError
                                     onSaveRequested: {
+                                        root.oneDriveError = ""
+                                        // Compute the folder while the request is still
+                                        // pending/processing (it carries the operator),
+                                        // THEN mark it delivered.
+                                        AppBridge.ensureFolderLink("")
                                         if (root.notification) AppBridge.updateRequestStatus(root.notification.id, "done")
-                                        root.saveState = "uploading"
                                         root.notification = null
                                         root.refresh()
                                     }
-                                    onLinkRequested: root.saveState = "linked"
-                                    onLinkCopied: { /* local feedback */ }
+                                    onLinkCopied: AppBridge.copyToClipboard(AppBridge.oneDriveLink)
                                 }
                             }
                         }

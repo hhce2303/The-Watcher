@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
@@ -18,6 +19,8 @@ from app.adapters.ui.log_handler import emitter as log_emitter
 from app.adapters.ui.screenshot_provider import MonitorScreenshotProvider
 from app.core.ports.request_port import ClipRequest, RequestPort
 from app.core.ports.user_config_port import UserConfigPort
+from app.core.cloud_share_service import CloudShareService
+from app.core.ports.cloud_share_port import ShareResult
 
 
 def _fmt_size(size_bytes: int) -> str:
@@ -67,8 +70,15 @@ class AppBridge(QObject):
     # IT: request system (WS server/client) was wired — header/status refresh
     requestSystemChanged   = Signal()
 
+    # ── OneDrive delivery (folder + share link) ───────────────────────
+    # state/folder/link changed — drives the OutputPanel bindings
+    oneDriveChanged        = Signal()
+    # one-way error message to QML (folder/link could not be produced)
+    oneDriveFailed         = Signal(str)
+
     # ── Private thread-bridge signals ─────────────────────────────────
     _monitors_from_service = Signal(object)   # List[MonitorInfo] — detection thread → main
+    _share_done            = Signal(object)   # ShareResult | Exception — share thread → main
 
     def __init__(
         self,
@@ -78,6 +88,7 @@ class AppBridge(QObject):
         player_service:     PlayerService,
         clips_dir:          Path,
         user_config_port:   UserConfigPort | None = None,
+        cloud_share_service: CloudShareService | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -88,6 +99,7 @@ class AppBridge(QObject):
         self._player_service    = player_service
         self._clips_dir         = clips_dir
         self._user_config_port  = user_config_port
+        self._cloud_share_service = cloud_share_service
 
         # QVideoSink registry — populated by registerVideoSink() called from QML.
         self._video_sinks: dict[int, object] = {}
@@ -132,6 +144,13 @@ class AppBridge(QObject):
         self._request_server  = None   # ClipRequestServer (IT role)
         self._request_client  = None   # ClipRequestClient (Supervisor role)
         self._slc_storage_host: str = ""
+
+        # OneDrive delivery state (folder + share link)
+        self._one_drive_state:  str = "idle"   # idle | working | linked | error
+        self._one_drive_folder: str = ""
+        self._one_drive_link:   str = ""
+        # Worker thread → Qt main thread (queued, like _monitors_from_service)
+        self._share_done.connect(self._apply_share_result)
 
         # Clip list
         self._clips: list[dict] = []
@@ -822,6 +841,140 @@ class AppBridge(QObject):
         if self._request_server is None:
             return 0
         return int(getattr(self._request_server, "_port", 0))
+
+    # ── OneDrive delivery (folder + share link) ───────────────────────
+
+    @Property(str, notify=oneDriveChanged)
+    def oneDriveState(self) -> str:
+        """idle | working | linked | error — drives the OutputPanel UI."""
+        return self._one_drive_state
+
+    @Property(str, notify=oneDriveChanged)
+    def oneDriveFolder(self) -> str:
+        """The destination folder path being ensured / that was shared."""
+        return self._one_drive_folder
+
+    @Property(str, notify=oneDriveChanged)
+    def oneDriveLink(self) -> str:
+        """The real share link for the folder, or '' until 'linked'."""
+        return self._one_drive_link
+
+    @Slot()
+    @Slot(str)
+    def ensureFolderLink(self, folder_path: str = "") -> None:
+        """Run the full OneDrive flow: search the destination folder, create it
+        (and any missing parents) if absent, then produce a share link for it.
+
+        Non-blocking — the (potentially slow) cloud work runs on a daemon
+        thread and the result is marshalled back to the Qt main thread via the
+        queued ``_share_done`` signal.  Pass an empty ``folder_path`` to let the
+        bridge derive it from config + the active request's operator + month.
+        """
+        if self._cloud_share_service is None:
+            logger.warning("ensureFolderLink: no cloud share service wired.")
+            self._set_one_drive_error("OneDrive no está configurado.")
+            return
+
+        path = (folder_path or "").strip() or self._compute_folder_path()
+        self._one_drive_folder = path
+        self._one_drive_link   = ""
+        self._one_drive_state  = "working"
+        self.oneDriveChanged.emit()
+        logger.info("OneDrive: ensuring folder '{}'.", path)
+        self._run_share_async(path)
+
+    @Slot()
+    def resetOneDrive(self) -> None:
+        """Clear the OneDrive panel back to idle — called when a new edit starts
+        so a stale link from a previous delivery never lingers."""
+        if (self._one_drive_state, self._one_drive_folder, self._one_drive_link) == (
+            "idle",
+            "",
+            "",
+        ):
+            return
+        self._one_drive_state  = "idle"
+        self._one_drive_folder = ""
+        self._one_drive_link   = ""
+        self.oneDriveChanged.emit()
+
+    @Slot(str)
+    def copyToClipboard(self, text: str) -> None:
+        """Put ``text`` on the system clipboard (makes the 'Copiar' button real).
+
+        ``clipboard()`` requires a GUI application; guard on the instance type so
+        headless/test contexts (QCoreApplication) no-op instead of hard-crashing
+        on Windows."""
+        from PySide6.QtGui import QGuiApplication  # noqa: PLC0415
+
+        app = QGuiApplication.instance()
+        if isinstance(app, QGuiApplication):
+            cb = app.clipboard()
+            if cb is not None:
+                cb.setText(text or "")
+
+    # ── OneDrive internals ────────────────────────────────────────────
+
+    def _run_share_async(self, folder_path: str) -> None:
+        """Spawn a daemon thread to run the share flow off the UI thread.
+
+        Overridable in tests so the flow can run inline for determinism."""
+        threading.Thread(
+            target=self._do_share,
+            args=(folder_path,),
+            daemon=True,
+            name="onedrive-share",
+        ).start()
+
+    def _do_share(self, folder_path: str) -> None:
+        """Runs OFF the Qt main thread — must not touch QML state directly.
+        Marshals the outcome back via ``_share_done`` (queued)."""
+        try:
+            result = self._cloud_share_service.ensure_folder_and_link(folder_path)
+            self._share_done.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("OneDrive share failed for '{}'.", folder_path)
+            self._share_done.emit(exc)
+
+    def _apply_share_result(self, payload: object) -> None:
+        """Runs on the Qt main thread (queued signal) — safe to touch QML state."""
+        if isinstance(payload, ShareResult):
+            self._one_drive_folder = payload.folder_path
+            self._one_drive_link   = payload.share_link
+            self._one_drive_state  = "linked"
+            self.oneDriveChanged.emit()
+            logger.info("OneDrive: link ready for '{}'.", payload.folder_path)
+        else:
+            self._set_one_drive_error(str(payload) if payload else "Error desconocido.")
+
+    def _set_one_drive_error(self, msg: str) -> None:
+        self._one_drive_state = "error"
+        self.oneDriveChanged.emit()
+        self.oneDriveFailed.emit(msg)
+
+    def _active_operator(self) -> str:
+        """Operator name of the current pending/processing request, or ''."""
+        if self._request_adapter is None:
+            return ""
+        try:
+            for req in self._request_adapter.load_all():
+                if getattr(req, "status", "") in ("pending", "processing"):
+                    return getattr(req, "operator", "") or ""
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not resolve active operator for OneDrive folder.")
+        return ""
+
+    def _compute_folder_path(self) -> str:
+        """Derive the destination folder: <base>/<operator>/<YYYY-MM>.
+
+        Replaces the old hardcoded 'SLC / clips-supervisor / 2026-06' mock."""
+        from app.infrastructure.config import get_settings  # noqa: PLC0415
+
+        settings = get_settings()
+        month    = datetime.now().strftime("%Y-%m")
+        operator = self._active_operator()
+        segments = [settings.onedrive_base_folder, operator, month]
+        return "/".join(s.strip("/ ") for s in segments if s and s.strip("/ "))
 
     # ── Helpers ───────────────────────────────────────────────────────
 

@@ -18,6 +18,14 @@ class TestEnforceRole:
         m.is_enabled = enabled_at_start
         return m
 
+    def _fake_task(self, registered: bool = True, raises: bool = False):
+        m = MagicMock()
+        if raises:
+            m.ensure_registered.side_effect = RuntimeError("GPO blocked")
+        else:
+            m.ensure_registered.return_value = registered
+        return m
+
     def test_operator_forces_autorecord(self):
         from app.core.role import enforce_role
         cfg = self._make_config(autorecord=False, role="operator")
@@ -25,11 +33,36 @@ class TestEnforceRole:
         enforce_role("operator", cfg, auto)
         assert cfg.autorecord is True
 
-    def test_operator_calls_set_autostart(self):
+    def test_operator_registers_task_and_drops_runkey(self):
+        # New contract: with a working scheduled-task module, the task becomes
+        # the sole launcher and the Run key is removed (set_autostart(False)).
         from app.core.role import enforce_role
         cfg = self._make_config(role="operator")
         auto = self._fake_autostart()
-        enforce_role("operator", cfg, auto)
+        task = self._fake_task(registered=True)
+        status = enforce_role("operator", cfg, auto, task)
+        assert status == "task"
+        task.ensure_registered.assert_called_once_with()
+        auto.set_autostart.assert_called_once_with(False)
+
+    def test_operator_falls_back_to_runkey_when_task_fails(self):
+        # Task registration fails (e.g. corporate GPO) → keep the Run key so
+        # login autostart still works; report the degraded "runkey" status.
+        from app.core.role import enforce_role
+        cfg = self._make_config(role="operator")
+        auto = self._fake_autostart()
+        task = self._fake_task(raises=True)
+        status = enforce_role("operator", cfg, auto, task)
+        assert status == "runkey"
+        auto.set_autostart.assert_called_once_with(True)
+
+    def test_operator_falls_back_to_runkey_without_task_module(self):
+        # No scheduled-task module injected → Run-key fallback (legacy contract).
+        from app.core.role import enforce_role
+        cfg = self._make_config(role="operator")
+        auto = self._fake_autostart()
+        status = enforce_role("operator", cfg, auto)
+        assert status == "runkey"
         auto.set_autostart.assert_called_once_with(True)
 
     def test_supervisor_forces_autorecord_off(self):

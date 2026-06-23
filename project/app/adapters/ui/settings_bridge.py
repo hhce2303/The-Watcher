@@ -11,7 +11,8 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.adapters.ffmpeg import encoder_selector
 from app.core.ports.user_config_port import UserConfigPort
-from app.core.role import IT, VALID_ROLES, default_autorecord_for_role
+from app.core.policy import policy_for
+from app.core.role import VALID_ROLES, default_autorecord_for_role
 from app.infrastructure import autostart
 from app.infrastructure.config import Settings
 
@@ -287,7 +288,12 @@ class SettingsBridge(QObject):
         if role not in VALID_ROLES:
             logger.warning("setRole: invalid role '{}' — ignored.", role)
             return
-        if self._role not in ("", IT) and not self._it_unlocked:
+        # Authorisation gate = the IT PIN, not the OS user. A role can change
+        # itself only if its policy allows it (IT and the first-run "" state),
+        # otherwise an IT PIN unlock (Ctrl+Alt+Shift+R) is required this session.
+        # NOTE: the PIN is the SOLE gate — anyone holding it can unlock on any
+        # machine. Tightening (per-machine PIN, audit) is tracked in TODOS.md.
+        if not policy_for(self._role).can_change_role and not self._it_unlocked:
             logger.warning("setRole: not authorised (role={}, unlocked={}).", self._role, self._it_unlocked)
             return
         if role == self._role:

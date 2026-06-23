@@ -54,6 +54,8 @@ from app.core.recording_service.models import MonitorInfo, Segment
 from app.core.recording_service.monitor_worker import MonitorWorker
 from app.core.recording_service.service import RecordingService
 from app.core.event_service import EventService
+from app.core.cloud_share_service import CloudShareService
+from app.adapters.cloud.local_share_adapter import LocalShareAdapter
 from app.core.player.player_service import PlayerService
 from app.core.role import (
     OPERATOR,
@@ -167,7 +169,7 @@ def _register_ffmpeg_cleanup() -> None:
     atexit.register(_cleanup)
 
 
-def _acquire_single_instance_lock() -> object:
+def _acquire_single_instance_lock(operator_silent: bool = False) -> object:
     """Return a Windows named mutex that prevents a second instance from starting.
 
     Returns the mutex handle (must stay in scope for the life of the process).
@@ -177,6 +179,12 @@ def _acquire_single_instance_lock() -> object:
     spawning the replacement while the outgoing instance is still releasing the
     mutex.  That transient collision is expected, so we wait for the old handle
     to drop before deciding a genuine second instance is running.
+
+    ``operator_silent`` (operator box): on contention, exit **0** with no dialog.
+    The operator's restart watchdog (a Scheduled Task) relaunches on a non-zero
+    result, so a benign collision must not read as a crash — otherwise the
+    scheduler would spin-loop relaunching.  And a kiosk operator must never see
+    a tkinter error box.
     """
     import ctypes
     ERROR_ALREADY_EXISTS = 183
@@ -191,6 +199,11 @@ def _acquire_single_instance_lock() -> object:
             break
         time.sleep(0.2)
 
+    if operator_silent:
+        # Benign collision on an operator box: exit cleanly, no dialog, exit 0.
+        logger.info("Another instance already running (operator) — exiting quietly.")
+        sys.exit(0)
+
     import tkinter, tkinter.messagebox  # noqa: PLC0415
     try:
         root = tkinter.Tk(); root.withdraw()
@@ -202,6 +215,19 @@ def _acquire_single_instance_lock() -> object:
     except Exception:
         pass
     sys.exit(1)
+
+
+def _peek_role() -> str:
+    """Best-effort read of the persisted role BEFORE the single-instance lock.
+
+    Needed so an operator box can suppress the contention dialog and exit 0.
+    Cheap (one JSON read); any failure falls back to "" (non-operator behaviour).
+    """
+    try:
+        from app.adapters.filesystem.user_config_adapter import JsonUserConfigAdapter  # noqa: PLC0415
+        return JsonUserConfigAdapter().load().role or ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _release_single_instance_lock(mutex: object) -> None:
@@ -218,7 +244,9 @@ def _release_single_instance_lock(mutex: object) -> None:
 
 
 def main() -> None:
-    _instance_lock = _acquire_single_instance_lock()
+    # Peek the role before the lock so an operator box exits 0 (no dialog) on a
+    # benign contention — its restart watchdog must not read that as a crash.
+    _instance_lock = _acquire_single_instance_lock(operator_silent=_peek_role() == OPERATOR)
     # Set by the role-change relaunch callback; checked after app.exec() returns
     # so the existing teardown runs once before we spawn the replacement.
     _relaunch_flag = {"requested": False}
@@ -241,8 +269,20 @@ def main() -> None:
     # in-place but does NOT re-persist — autorecord/autostart for operator
     # are always overridden at startup without changing the stored value.
     from app.infrastructure import autostart as _autostart_mod  # noqa: PLC0415
-    enforce_role(user_config.role, user_config, _autostart_mod)
-    logger.info("Role: {}", user_config.role or "(not configured)")
+    from app.infrastructure import scheduled_task as _scheduled_task_mod  # noqa: PLC0415
+    # Operator: a Scheduled Task is the sole launcher (restart-on-failure);
+    # returns "task" (registered) or "runkey" (degraded fallback). Non-operator
+    # roles return None and we remove any stale watchdog left from a prior role.
+    watchdog_status = enforce_role(
+        user_config.role, user_config, _autostart_mod, _scheduled_task_mod
+    )
+    if user_config.role != OPERATOR:
+        _scheduled_task_mod.remove_task()
+    logger.info(
+        "Role: {} | watchdog: {}",
+        user_config.role or "(not configured)",
+        watchdog_status or "n/a",
+    )
 
     # ── Per-PC encoder selection ──────────────────────────────────────
     # driver: auto/nvidia/intel/amd/cpu (RTX machines can force NVENC).
@@ -498,6 +538,14 @@ def main() -> None:
         export_port=editor_export, clips_dir=clips_dir, inspector=inspector
     )
 
+    # ── OneDrive delivery (folder + share link) ───────────────────────
+    # Local adapter today (creates real folders under the OneDrive sync root,
+    # mints file:// links); swap to OneDriveGraphAdapter once Azure AD creds
+    # exist — the service/bridge/UI are adapter-agnostic.
+    cloud_share_service = CloudShareService(
+        LocalShareAdapter(root=settings.onedrive_root)
+    )
+
     # ── Bridge objects ────────────────────────────────────────────────
     bridge = AppBridge(
         recording_service=recording_service,
@@ -506,6 +554,7 @@ def main() -> None:
         player_service=player_service,
         clips_dir=clips_dir,
         user_config_port=user_config_port,
+        cloud_share_service=cloud_share_service,
     )
     # ── Wire detection → recording + UI (bridge is now in scope) ────────
     def _on_monitor_added(monitor: MonitorInfo) -> None:
@@ -611,6 +660,13 @@ def main() -> None:
     engine.rootContext().setContextProperty("AppBridge", bridge)
     engine.rootContext().setContextProperty("SettingsBridge", settings_bridge)
     engine.rootContext().setContextProperty("EditorBridge", editor_bridge)
+    # Role capability policy — constant for the life of the process (role only
+    # changes via relaunch). QML reads e.g. Policy.canMinimizeWindow. The one
+    # thing that changes at runtime, the IT unlock, stays on SettingsBridge.
+    from app.core.policy import policy_for  # noqa: PLC0415
+    engine.rootContext().setContextProperty(
+        "Policy", policy_for(user_config.role).as_dict()
+    )
     qml_path = ui_dir / "Main.qml"
     logger.info("Loading QML: {} (exists={})", qml_path, qml_path.exists())
     engine.load(QUrl.fromLocalFile(str(qml_path.resolve())))
@@ -677,6 +733,7 @@ def main() -> None:
         show_fn=lambda: bridge.requestShowWindow.emit(),
         app=app,
         role=user_config.role,
+        watchdog_status=watchdog_status,
     )  # noqa: F841
 
     logger.info("UI ready. Role: {}.", user_config.role or "not configured")

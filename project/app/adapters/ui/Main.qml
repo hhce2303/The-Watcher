@@ -13,21 +13,33 @@ Window {
     flags: Qt.Window
 
     // ── Role helpers ─────────────────────────────────────────────────────────
-    // Tabs visible per role:  operator → [0]   supervisor → [1]   it/""→ all
+    // Visible tabs come from the policy map (Policy.visibleTabs); an empty list
+    // means "all tabs". operator → [0]  supervisor → [1]  it/"" → all.
     function tabVisible(idx) {
-        var r = SettingsBridge.role
-        if (r === "operator")   return idx === 0
-        if (r === "supervisor") return idx === 1
-        return true
+        var t = Policy.visibleTabs
+        if (!t || t.length === 0) return true
+        return t.indexOf(idx) !== -1
     }
 
     // ── Operator: block window close ─────────────────────────────────────────
-    // Operator PCs must never stop recording by accident. Pressing Alt+F4 or
-    // the OS close button minimises instead of terminating the process.
+    // Operator PCs must never stop recording, and the persistent REC indicator
+    // must stay on screen — so the window neither closes nor hides. Reject the
+    // close (Alt+F4 / ✕); the window simply stays. Other roles close normally.
     onClosing: function(close) {
-        if (SettingsBridge.role === "operator") {
+        if (!Policy.canCloseWindow) {
             close.accepted = false
-            root.hide()   // minimise to tray
+        }
+    }
+
+    // ── Operator: block minimise ──────────────────────────────────────────────
+    // Win+M / Win+D / taskbar-click can't be intercepted from QML, so re-assert
+    // full screen whenever the OS tries to minimise or hide the operator window.
+    onVisibilityChanged: {
+        if (!Policy.canMinimizeWindow &&
+            (root.visibility === Window.Minimized || root.visibility === Window.Hidden)) {
+            root.showFullScreen()
+            root.raise()
+            root.requestActivate()
         }
     }
 
@@ -405,14 +417,21 @@ Window {
                     Item { width: 16 }
 
                     // ── Window controls ───────────────────────────────────────
+                    // Minimise (act 0) is dropped when the policy forbids it
+                    // (operator) — the window must stay on screen.
                     Row {
                         spacing: 2
                         Repeater {
-                            model: [
-                                { icon: "−", hover: "#3D4555", act: 0 },
-                                { icon: "□", hover: "#3D4555", act: 1 },
-                                { icon: "✕", hover: "#C42B1C", act: 2 },
-                            ]
+                            model: Policy.canMinimizeWindow
+                                ? [
+                                    { icon: "−", hover: "#3D4555", act: 0 },
+                                    { icon: "□", hover: "#3D4555", act: 1 },
+                                    { icon: "✕", hover: "#C42B1C", act: 2 },
+                                  ]
+                                : [
+                                    { icon: "□", hover: "#3D4555", act: 1 },
+                                    { icon: "✕", hover: "#C42B1C", act: 2 },
+                                  ]
                             delegate: Rectangle {
                                 width: 28; height: 28; radius: W.Tokens.rXs
                                 color: wh.hovered ? modelData.hover : "transparent"
@@ -1258,6 +1277,46 @@ Window {
             active: SettingsBridge.role === ""
             visible: active
             sourceComponent: W.RoleSetupWizard {}
+        }
+
+        // ── Operator: persistent, undismissable recording indicator ───────────
+        // The operator's window can't be closed or minimised, so this pill stays
+        // on screen whenever recording is active. It has NO input handlers, so
+        // there is no operator-reachable way to dismiss it. z above everything.
+        Rectangle {
+            id: recLockOverlay
+            z: 200
+            visible: (Policy.recordingIndicatorLocked === true) && AppBridge.isRecording
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.topMargin: 8
+            width: recLockRow.width + 24
+            height: 26
+            radius: 13
+            color: W.Tokens.recordDim
+            border.color: W.Tokens.accentRecord
+            border.width: 1
+            Row {
+                id: recLockRow
+                anchors.centerIn: parent
+                spacing: 7
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 8; height: 8; radius: 4; color: W.Tokens.accentRecord
+                    SequentialAnimation on opacity {
+                        running: recLockOverlay.visible; loops: Animation.Infinite
+                        NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
+                        NumberAnimation { to: 1.0;  duration: 800; easing.type: Easing.InOutSine }
+                    }
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "● GRABANDO"
+                    color: W.Tokens.accentRecord
+                    font.family: W.Tokens.mono; font.pixelSize: 11
+                    font.weight: Font.Bold; font.letterSpacing: 1
+                }
+            }
         }
 
     } // root Rectangle

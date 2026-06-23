@@ -21,15 +21,11 @@ from loguru import logger
 def _relaunch_argv() -> list[str]:
     """Command line that re-launches this app.
 
-    - Frozen (PyInstaller one-file/one-dir): ``sys.executable`` IS the app exe,
-      so re-running it alone starts a new instance.
-    - Source: re-run the module entry point with the same interpreter.  The
-      working directory is ``project/`` (where ``app`` is importable), and
-      ``subprocess`` inherits it, so ``-m app.main`` resolves.
+    Delegates to ``launch_target.launch_argv`` — the single source of truth for
+    frozen-vs-source launch, shared with autostart and the restart watchdog.
     """
-    if getattr(sys, "frozen", False):
-        return [sys.executable]
-    return [sys.executable, "-m", "app.main"]
+    from app.infrastructure.launch_target import launch_argv  # noqa: PLC0415
+    return launch_argv()
 
 
 def relaunch_and_exit(
