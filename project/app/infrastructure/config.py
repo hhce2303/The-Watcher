@@ -138,6 +138,27 @@ class Settings:
     # WebSocket port the IT PC listens on for incoming clip requests.
     it_ws_port: int = int(os.getenv("IT_WS_PORT", "9090"))
 
+    # ── OneDrive delivery (folder + share link) ───────────────────────────────
+    # ONEDRIVE_ROOT — local root the LocalShareAdapter operates on.  Defaults to
+    #   the conventional OneDrive sync folder so the desktop client uploads the
+    #   created folder to the cloud.  Override per-deployment if OneDrive lives
+    #   elsewhere.  Unlike SEGMENT_DIR/CLIPS_DIR (kept OUT of OneDrive on purpose
+    #   to avoid sync locks on hot files), delivery folders are cold and *should*
+    #   live inside OneDrive.
+    onedrive_root: Path = _resolve_dir(
+        "ONEDRIVE_ROOT",
+        os.path.join(os.environ.get("USERPROFILE", r"C:\Users\Default"), "OneDrive"),
+    )
+    # ONEDRIVE_BASE_FOLDER — logical base path under the root where per-operator
+    #   delivery folders are created (e.g. "SLC/clips-supervisor/<operator>/<YYYY-MM>").
+    onedrive_base_folder: str = os.getenv("ONEDRIVE_BASE_FOLDER", "SLC/clips-supervisor")
+
+    # Deferred Microsoft Graph adapter (OneDriveGraphAdapter) — populate these
+    # once IT registers an Azure AD app; empty by default so the local adapter
+    # stays in use until then.
+    onedrive_client_id: str = os.getenv("ONEDRIVE_CLIENT_ID", "")
+    onedrive_tenant_id: str = os.getenv("ONEDRIVE_TENANT_ID", "")
+
     # Logging
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
