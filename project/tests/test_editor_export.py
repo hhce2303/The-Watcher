@@ -33,9 +33,11 @@ def _timeline(*durs: tuple[float, float, float]) -> EditTimeline:
     return t
 
 
-def _stream(codec: str, w: int, h: int):
+def _stream(codec: str, w: int, h: int, fps: float = 30.0):
     from types import SimpleNamespace
-    return SimpleNamespace(video_stream=SimpleNamespace(codec=codec, width=w, height=h))
+    return SimpleNamespace(
+        video_stream=SimpleNamespace(codec=codec, width=w, height=h), fps=fps
+    )
 
 
 class _FakeInspector:
@@ -83,6 +85,50 @@ def test_no_inspector_skips_compat_check(tmp_path: Path) -> None:
     adapter = FFmpegEditorExportAdapter(comp, work_dir=tmp_path / "w")
     adapter.export(_timeline((10, 0, 4), (10, 0, 4)), tmp_path / "out.mp4")
     assert comp.compile.call_count == 3
+
+
+def test_reencode_normalizes_mismatched_and_skips_guard(tmp_path: Path, monkeypatch) -> None:
+    # Re-encode mode: every clip re-encoded to a common target, so mismatched
+    # codecs/resolutions are NOT rejected — they're normalized.
+    comp = _mock_compiler()
+    insp = _FakeInspector({
+        "clip0.mp4": _stream("hevc", 1920, 1080, 30),
+        "clip1.mp4": _stream("h264", 1280, 720, 60),
+    })
+    adapter = FFmpegEditorExportAdapter(comp, work_dir=tmp_path / "w",
+                                        inspector=insp, reencode=True)
+    calls: list = []
+
+    def fake_trim(src, out, in_s, out_s, target):
+        calls.append((Path(src).name, target))
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_bytes(b"x")
+
+    monkeypatch.setattr(adapter, "_reencode_trim", fake_trim)
+    adapter.export(_timeline((10, 0, 4), (10, 0, 4)), tmp_path / "out.mp4")
+
+    assert len(calls) == 2                  # both clips re-encoded (no reject)
+    assert comp.compile.call_count == 1     # compiler only does the final concat
+    # target = max dims (1920x1080), max fps (60)
+    assert calls[0][1] == (1920, 1080, 60)
+
+
+def test_reencode_single_clip_uses_trim_only(tmp_path: Path, monkeypatch) -> None:
+    comp = _mock_compiler()
+    insp = _FakeInspector({"clip0.mp4": _stream("hevc", 1920, 1080, 30)})
+    adapter = FFmpegEditorExportAdapter(comp, inspector=insp, reencode=True)
+    seen: list = []
+    monkeypatch.setattr(adapter, "_reencode_trim",
+                        lambda *a: seen.append(a) or Path(a[1]).write_bytes(b"x"))
+    out = tmp_path / "out.mp4"
+    adapter.export(_timeline((10, 2, 8)), out)
+    assert len(seen) == 1 and seen[0][1] == out   # exact trim straight to output
+    comp.compile.assert_not_called()              # no concat for a single clip
+
+
+def test_target_format_falls_back_without_inspector(tmp_path: Path) -> None:
+    adapter = FFmpegEditorExportAdapter(_mock_compiler(), reencode=True)
+    assert adapter._target_format([]) == (1920, 1080, 30)
 
 
 def test_single_clip_one_compile(tmp_path: Path) -> None:

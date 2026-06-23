@@ -489,7 +489,11 @@ def main() -> None:
     # ── Editor subsystem (Fase 0) — evidence-reel timeline + export ────
     # Rust segment engine when available, FFmpeg fallback otherwise (ADR-0006).
     segment_compiler = make_segment_compiler(codec=settings.video_codec)
-    editor_export    = FFmpegEditorExportAdapter(segment_compiler, inspector=inspector)
+    # reencode=True: frame-exact cuts + normalize every clip to one format, so
+    # mixed-codec/resolution reels just work (evidence reel favors precision).
+    editor_export    = FFmpegEditorExportAdapter(
+        segment_compiler, inspector=inspector, reencode=True
+    )
     editor_bridge    = EditorBridge(
         export_port=editor_export, clips_dir=clips_dir, inspector=inspector
     )
