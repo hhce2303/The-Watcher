@@ -360,6 +360,20 @@ class AppBridge(QObject):
         else:
             logger.info("Manual event rejected — cooldown active.")
 
+    @Slot()
+    def startRecording(self) -> None:
+        """Start recording manually (for IT)."""
+        if self._recording_service is not None:
+            self._recording_service.start()
+            self._poll()
+
+    @Slot()
+    def stopRecording(self) -> None:
+        """Stop recording manually (for IT)."""
+        if self._recording_service is not None:
+            self._recording_service.stop()
+            self._poll()
+
     @Slot(str)
     def toggleMonitor(self, fingerprint: str) -> None:
         """Toggle clip-selection for a monitor. Does NOT affect recording."""

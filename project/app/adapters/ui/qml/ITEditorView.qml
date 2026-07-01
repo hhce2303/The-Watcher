@@ -623,17 +623,143 @@ Item {
                             }
                         }
 
-                        // The shared monitor selector (same control as the operator view).
-                        Rectangle {
+                        // The shared monitor selector and preview area
+                        RowLayout {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            color: W.Tokens.bgBase
-                            border.color: W.Tokens.borderBase; border.width: 1
-                            radius: W.Tokens.rSm + 2
-                            clip: true
-                            W.MonitorSelector {
-                                anchors.fill: parent
-                                anchors.margins: 1
+                            spacing: 14
+
+                            // Left side: Selector + Record Button
+                            ColumnLayout {
+                                Layout.preferredWidth: 320
+                                Layout.fillHeight: true
+                                spacing: 14
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    color: W.Tokens.bgBase
+                                    border.color: W.Tokens.borderBase; border.width: 1
+                                    radius: W.Tokens.rSm + 2
+                                    clip: true
+                                    W.MonitorSelector {
+                                        anchors.fill: parent
+                                        anchors.margins: 1
+                                    }
+                                }
+
+                                ActionButton {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 38
+                                    primary: !AppBridge.isRecording
+                                    text: AppBridge.isRecording ? "⏹ Detener Grabación" : "⏺ Arrancar Grabación"
+                                    onClicked: {
+                                        if (AppBridge.isRecording) {
+                                            AppBridge.stopRecording()
+                                        } else {
+                                            AppBridge.startRecording()
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Right side: Preview area
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                color: "#020408"
+                                border.color: W.Tokens.borderBase; border.width: 1
+                                radius: W.Tokens.rSm + 2
+                                clip: true
+
+                                property var screens: AppBridge.monitors
+                                property int activeScreenCount: {
+                                    var n = 0
+                                    for (var i = 0; i < screens.length; i++) {
+                                        if (screens[i].active) n++
+                                    }
+                                    return Math.max(1, n)
+                                }
+
+                                Row {
+                                    anchors.fill: parent
+                                    Repeater {
+                                        model: parent.screens.filter(s => s.active)
+                                        delegate: Rectangle {
+                                            width: parent.parent.width / parent.parent.activeScreenCount
+                                            height: parent.height
+                                            color: "transparent"
+                                            clip: true
+
+                                            VideoOutput {
+                                                anchors.fill: parent
+                                                fillMode: VideoOutput.PreserveAspectFit
+                                                Component.onCompleted: {
+                                                    AppBridge.registerVideoSink(modelData.idx, videoSink)
+                                                }
+                                            }
+
+                                            // Overlay: monitor badge + name
+                                            Row {
+                                                anchors { top: parent.top; left: parent.left; margins: 10 }
+                                                spacing: 6
+                                                z: 1
+                                                Rectangle {
+                                                    width: numTxt.implicitWidth + 10; height: 18; radius: W.Tokens.rXs
+                                                    color: Qt.rgba(0, 0, 0, 0.55)
+                                                    border.color: W.Tokens.accentPrimary; border.width: 1
+                                                    Text {
+                                                        id: numTxt; anchors.centerIn: parent
+                                                        text: String(modelData.idx + 1).padStart(2, "0")
+                                                        color: W.Tokens.accentPrimary
+                                                        font.family: W.Tokens.mono; font.pixelSize: 9; font.weight: Font.Bold
+                                                    }
+                                                }
+                                                Rectangle {
+                                                    height: 18; width: nameTxt.implicitWidth + 12; radius: W.Tokens.rXs
+                                                    color: Qt.rgba(0, 0, 0, 0.55)
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    Text {
+                                                        id: nameTxt; anchors.centerIn: parent
+                                                        text: modelData.name
+                                                        color: W.Tokens.textPrimary
+                                                        font.family: W.Tokens.sans; font.pixelSize: 10; font.weight: Font.DemiBold
+                                                    }
+                                                }
+                                            }
+
+                                            // Bottom-right: resolution
+                                            Rectangle {
+                                                anchors { bottom: parent.bottom; right: parent.right; margins: 8 }
+                                                height: 16; width: resTxt.implicitWidth + 10; radius: 3
+                                                color: Qt.rgba(0, 0, 0, 0.55)
+                                                z: 1
+                                                Text {
+                                                    id: resTxt; anchors.centerIn: parent
+                                                    text: modelData.res
+                                                    color: W.Tokens.textDim
+                                                    font.family: W.Tokens.mono; font.pixelSize: 9
+                                                }
+                                            }
+
+                                            // Vertical divider between tiles
+                                            Rectangle {
+                                                anchors.right: parent.right; width: 1; height: parent.height
+                                                color: W.Tokens.borderBase
+                                                visible: index < parent.parent.activeScreenCount - 1
+                                                z: 1
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Empty hint
+                                Text {
+                                    anchors.centerIn: parent
+                                    visible: parent.activeScreenCount === 0 || parent.screens.filter(s => s.active).length === 0
+                                    text: "Sin pantallas seleccionadas"
+                                    color: W.Tokens.textDim; font.family: W.Tokens.mono; font.pixelSize: 12
+                                }
                             }
                         }
                     }

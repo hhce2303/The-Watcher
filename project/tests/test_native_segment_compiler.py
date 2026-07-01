@@ -29,8 +29,11 @@ def _fake_native(ready: bool = True) -> types.ModuleType:
 
 class TestStatus:
     def test_absent_engine(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delitem(sys.modules, "watcher_segments", raising=False)
-        # Ensure import fails (no such module on this machine).
+        # Simulate an absent engine deterministically: a ``None`` entry in
+        # sys.modules makes ``import watcher_segments`` raise ImportError.
+        # (delitem alone only clears the cache — the real .pyd, once the pilot
+        # wheel is installed, would be re-imported and defeat the test.)
+        monkeypatch.setitem(sys.modules, "watcher_segments", None)
         assert rsc.rust_engine_status() == (False, False)
 
     def test_present_and_ready(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,6 +78,8 @@ class TestRustAdapter:
         assert adapter.engine_name == "rust"
 
     def test_raises_when_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delitem(sys.modules, "watcher_segments", raising=False)
+        # None sentinel → import raises → adapter construction must fail, even
+        # when the real .pyd is installed on this machine (pilot wheel).
+        monkeypatch.setitem(sys.modules, "watcher_segments", None)
         with pytest.raises(RuntimeError):
             rsc.RustSegmentCompilerAdapter()
