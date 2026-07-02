@@ -80,6 +80,12 @@ a = Analysis(
         "PySide6.QtSvg",
         "PySide6.QtXml",
         "PySide6.QtDBus",
+        # Native Rust segment engine (.pyd). Imported lazily inside
+        # rust_segment_compiler._load_native(), so PyInstaller's static analysis
+        # can't see it — declare it here so the .pyd is bundled when installed.
+        # Harmless if absent from site-packages: PyInstaller just skips it and
+        # the app uses the FFmpeg fallback.
+        "watcher_segments",
     ],
     hookspath=[],
     hooksconfig={},

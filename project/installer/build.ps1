@@ -77,6 +77,42 @@ if ($NeedsVenvSetup) {
 }
 
 # ---------------------------------------------------------------------------
+# Step 1b: Build + install the native Rust segment engine into the clean venv.
+# OPTIONAL / non-fatal — the app falls back to the FFmpeg segment compiler when
+# the .pyd is absent (ENGINE_READY gate). Must run BEFORE PyInstaller so the
+# .pyd lands in site-packages and the spec's hiddenimport can bundle it.
+# ---------------------------------------------------------------------------
+$CleanPython = "$CleanVenv\Scripts\python.exe"
+$CrateDir    = Join-Path $ProjectRoot "native\watcher_segments"
+if (Get-Command cargo -ErrorAction SilentlyContinue) {
+    if (Test-Path $CrateDir) {
+        Write-Host "Building native Rust engine (watcher_segments)..." -ForegroundColor Cyan
+        & $CleanPip install --upgrade maturin --quiet
+        $WheelOut = Join-Path $env:TEMP "tw_build_wheels"
+        Push-Location $CrateDir
+        try {
+            # --interpreter (not `maturin develop`) so maturin targets THIS venv
+            # and does not autodetect an unrelated one.
+            & $CleanPython -m maturin build --release --interpreter $CleanPython --out $WheelOut
+            if ($LASTEXITCODE -eq 0) {
+                $Wheel = Get-ChildItem $WheelOut -Filter "watcher_segments-*.whl" -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime | Select-Object -Last 1
+                if ($Wheel) {
+                    & $CleanPip install --force-reinstall --no-deps $Wheel.FullName --quiet
+                    Write-Host "Native Rust engine installed into clean venv." -ForegroundColor Green
+                } else {
+                    Write-Warning "Native engine wheel not found after build — using FFmpeg fallback."
+                }
+            } else {
+                Write-Warning "Native engine build failed — the bundle will use the FFmpeg fallback."
+            }
+        } finally { Pop-Location }
+    }
+} else {
+    Write-Warning "Rust toolchain (cargo) not found — building without the native engine (FFmpeg fallback)."
+}
+
+# ---------------------------------------------------------------------------
 # Step 2: Create junction so PyInstaller sees the project at a comma-free path
 # ---------------------------------------------------------------------------
 if (Test-Path $JunctionPath) {
