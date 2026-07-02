@@ -47,7 +47,9 @@ class TestStatus:
 
 class TestFactory:
     def test_falls_back_to_ffmpeg_when_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delitem(sys.modules, "watcher_segments", raising=False)
+        # None sentinel → import raises → factory must fall back, even with the
+        # real (ready) .pyd installed on this machine.
+        monkeypatch.setitem(sys.modules, "watcher_segments", None)
         engine = rsc.make_segment_compiler()
         assert isinstance(engine, FFmpegSegmentCompilerAdapter)
         assert engine.engine_name == "ffmpeg"
