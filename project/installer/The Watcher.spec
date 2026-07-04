@@ -86,6 +86,20 @@ a = Analysis(
         # Harmless if absent from site-packages: PyInstaller just skips it and
         # the app uses the FFmpeg fallback.
         "watcher_segments",
+        # F1 (ADR-0010/0011): the IPC + headless-runtime modules and pywin32
+        # submodules are imported LAZILY inside main.py's --daemon/--sidecar
+        # branch, so static analysis misses them. Declare them so the daemon /
+        # sidecar work in the frozen build.
+        "app.adapters.ipc.pipe_server",
+        "app.adapters.ipc.pipe_client",
+        "app.adapters.ipc.router",
+        "app.runtime.headless",
+        "win32pipe",
+        "win32file",
+        "win32security",
+        "win32process",
+        "winerror",
+        "pywintypes",
     ],
     hookspath=[],
     hooksconfig={},
