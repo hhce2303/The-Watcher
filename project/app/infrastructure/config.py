@@ -63,6 +63,10 @@ class Settings:
 
     # FFmpeg capture settings
     capture_source: str = os.getenv("CAPTURE_SOURCE", "desktop")
+    # Screen-capture backend: "auto" (prefer ddagrab/DXGI, fall back to gdigrab),
+    # "ddagrab" (force DXGI Desktop Duplication — no GDI cursor flicker), or
+    # "gdigrab" (force legacy GDI BitBlt).  Default "auto".
+    capture_backend: str = os.getenv("CAPTURE_BACKEND", "auto")
     capture_framerate: int = int(os.getenv("CAPTURE_FRAMERATE", "30"))
     output_width: int = int(os.getenv("OUTPUT_WIDTH", "1920"))
     output_height: int = int(os.getenv("OUTPUT_HEIGHT", "1080"))
@@ -158,6 +162,40 @@ class Settings:
     # stays in use until then.
     onedrive_client_id: str = os.getenv("ONEDRIVE_CLIENT_ID", "")
     onedrive_tenant_id: str = os.getenv("ONEDRIVE_TENANT_ID", "")
+
+    # ── Fase 3 — ONNX batch inference ────────────────────────────────────────
+    # ONNX_MODEL_PATH — absolute path to a YOLOv8/v5 ONNX model file.
+    #   Empty string (default) = no model → MockDetectorAdapter stays active.
+    #   Set to a valid .onnx path to enable real inference on closed clips.
+    onnx_model_path: str = os.getenv("ONNX_MODEL_PATH", "")
+
+    # INFERENCE_DEVICE — execution provider for ONNX Runtime.
+    #   "cpu"       → CPUExecutionProvider (always available, no GPU needed)
+    #   "directml"  → DmlExecutionProvider (DirectX 12 GPU, Windows only)
+    #   "cuda"      → CUDAExecutionProvider (NVIDIA GPU, requires CUDA toolkit)
+    inference_device: str = os.getenv("INFERENCE_DEVICE", "cpu").lower()
+
+    # BATCH_FRAME_INTERVAL — extract 1 frame every N seconds from each clip.
+    #   Lower = more detections but more CPU/GPU work.  Default: 1 (1fps).
+    batch_frame_interval: int = int(os.getenv("BATCH_FRAME_INTERVAL", "1"))
+
+    # ── Fase 4 — Real-time inference + analytics ──────────────────────────────
+    # MOTION_THRESHOLD — fraction of changed pixels (0..1) required to pass the
+    #   motion gate and invoke ONNX.  0.015 = ~1.5 % of pixels changed; raise
+    #   it in flickering-screen / AC-vent environments.
+    motion_threshold: float = float(os.getenv("MOTION_THRESHOLD", "0.015"))
+
+    # LIVE_POLL_INTERVAL — seconds between preview JPEG reads for live inference.
+    #   0.5 matches the preview_fps=2 written by FFmpegRecorderAdapter.
+    live_poll_interval: float = float(os.getenv("LIVE_POLL_INTERVAL", "0.5"))
+
+    # TRACKER_IOU_THRESHOLD — minimum IoU to match a detection to an existing
+    #   track (greedy SORT-lite).  0.3 is a good general default.
+    tracker_iou_threshold: float = float(os.getenv("TRACKER_IOU_THRESHOLD", "0.3"))
+
+    # TRACKER_MAX_AGE — frames a track may go unmatched before eviction.
+    #   At 2fps, 5 frames = 2.5 s of grace.
+    tracker_max_age: int = int(os.getenv("TRACKER_MAX_AGE", "5"))
 
     # Logging
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

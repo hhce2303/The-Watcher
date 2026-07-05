@@ -50,6 +50,7 @@ class FFmpegRecorderAdapter(RecorderPort):
         width: int = 1920,
         height: int = 1080,
         capture_source: str = "desktop",
+        capture_backend: str = "auto",
         codec: str = "h264",
         on_segment_ready: Optional[Callable[[Segment], None]] = None,
         on_crash: Optional[Callable[[], None]] = None,
@@ -63,6 +64,16 @@ class FFmpegRecorderAdapter(RecorderPort):
         self._width = width
         self._height = height
         self._capture_source = capture_source
+        # Screen-capture backend.  "ddagrab" uses the DXGI Desktop Duplication
+        # API (GPU frames, no GDI BitBlt) — this eliminates the on-screen mouse
+        # cursor flicker caused by gdigrab's BitBlt(SRCCOPY|CAPTUREBLT), which
+        # forces the display driver to hide/redraw the hardware cursor sprite on
+        # every frame (~30x/s).  "gdigrab" is the legacy GDI backend, kept as a
+        # fallback.  "auto" probes for ddagrab at start() and falls back to
+        # gdigrab if the DXGI path is unavailable (older Windows / no D3D11).
+        self._capture_backend = (capture_backend or "auto").lower()
+        self._resolved_backend: Optional[str] = None
+        self._ddagrab_probe: Optional[bool] = None
         self._codec = codec
         self._on_segment_ready = on_segment_ready
         self._on_crash = on_crash
@@ -105,6 +116,11 @@ class FFmpegRecorderAdapter(RecorderPort):
         # Re-index any segments left on disk from a previous run so that
         # clips can be built immediately after a crash-restart.
         self._recover_existing_segments(output_dir)
+
+        # Decide the capture backend once per process (memoised).  Doing it here
+        # rather than in __init__ keeps the (potentially slow) ddagrab probe off
+        # the constructor and out of unit tests that never start the recorder.
+        self._resolved_backend = self._resolve_backend()
 
         cmd = self._build_ffmpeg_command(output_dir)
         self._log.info("Starting FFmpeg: {}", " ".join(cmd))
@@ -184,12 +200,18 @@ class FFmpegRecorderAdapter(RecorderPort):
     # ------------------------------------------------------------------
 
     def _build_ffmpeg_command(self, output_dir: Path) -> list[str]:
-        """Build a gdigrab command for this monitor.
+        """Build the FFmpeg capture command for the configured monitor.
 
-        When ``preview_path`` is set, uses ``-filter_complex split`` so a single
-        FFmpeg process outputs both the full-fps recording segment AND a low-fps
-        JPEG preview file.  This avoids a second gdigrab process which would cause
-        visible screen flickering due to concurrent GDI BitBlt calls.
+        Dispatches on the resolved capture backend:
+
+        * ``ddagrab`` — DXGI Desktop Duplication (GPU frames, no GDI BitBlt).
+          The default when available.  Eliminates the on-screen hardware-cursor
+          flicker that gdigrab causes via ``BitBlt(SRCCOPY | CAPTUREBLT)``.
+        * ``gdigrab`` — legacy GDI BitBlt backend, kept as a fallback.
+
+        When ``preview_path`` is set, a single capture is split into a full-fps
+        recording-segment stream and a low-fps JPEG preview stream, so there is
+        only ever ONE screen-capture pipeline.
         """
         with self._monitors_lock:
             monitor = self._monitors[0] if self._monitors else None
@@ -199,67 +221,19 @@ class FFmpegRecorderAdapter(RecorderPort):
         output_pattern = str(output_dir / "seg_%Y%m%d_%H%M%S.ts")
         # Live capture: real-time preset so FFmpeg keeps up with the screen.
         encoder, encoder_flags = get_encoder(self._codec, realtime=True)
+        backend = self._resolved_backend or "gdigrab"
 
         self._log.info(
-            "[RECORDER] {} — gdigrab: region={}x{} offset=({},{}) "
+            "[RECORDER] {} — backend={} region={}x{} offset=({},{}) idx={} "
             "encoder={} preview={}",
-            monitor.display_name,
-            monitor.width, monitor.height,
-            monitor.x, monitor.y,
-            encoder,
-            self._preview_path or "off",
+            monitor.display_name, backend,
+            monitor.width, monitor.height, monitor.x, monitor.y, monitor.index,
+            encoder, self._preview_path or "off",
         )
 
-        # Common gdigrab input arguments
-        gdi_input = [
-            resolve_ffmpeg(),
-            "-f", "gdigrab",
-            "-framerate", str(self._framerate),
-            "-offset_x", str(monitor.x),
-            "-offset_y", str(monitor.y),
-            "-video_size", f"{monitor.width}x{monitor.height}",
-            "-draw_mouse", "1",
-            "-i", "desktop",
-        ]
-
-        if self._preview_path is not None:
-            # ── Dual output: recording segments + preview JPEG ─────────────
-            # filter_complex splits the raw capture:
-            #   [rec]  → scale to output resolution → H.264 segment muxer
-            #   [prev] → drop to preview_fps, scale to preview_width → JPEG file
-            # Only ONE screen capture process — eliminates double-gdigrab flickering.
-            filt = (
-                f"[0:v]split=2[rec][prev];"
-                f"[rec]scale={self._width}:{self._height},format=yuv420p[recout];"
-                f"[prev]fps={self._preview_fps},scale={self._preview_width}:-2,"
-                f"format=yuv420p[prevout]"
-            )
-            return [
-                *gdi_input,
-                "-filter_complex", filt,
-                # Output 0: recording segments
-                "-map", "[recout]",
-                "-c:v", encoder, *encoder_flags,
-                *quality_flags(encoder, self._crf),
-                "-f", "segment",
-                "-segment_time", str(self._segment_duration),
-                "-segment_format", "mpegts",
-                "-reset_timestamps", "1",
-                "-strftime", "1",
-                "-y", output_pattern,
-                # Output 1: preview JPEG (overwritten at preview_fps)
-                "-map", "[prevout]",
-                "-q:v", "2",
-                "-f", "image2",
-                "-update", "1",
-                "-y", str(self._preview_path),
-            ]
-
-        # ── Single output: recording segments only ─────────────────────────
-        vf_filter = f"scale={self._width}:{self._height},format=yuv420p"
-        return [
-            *gdi_input,
-            "-vf", vf_filter,
+        # Recording-segment output tail (shared by both backends and both the
+        # dual-output and single-output variants).
+        seg_out = [
             "-c:v", encoder, *encoder_flags,
             *quality_flags(encoder, self._crf),
             "-f", "segment",
@@ -269,6 +243,133 @@ class FFmpegRecorderAdapter(RecorderPort):
             "-strftime", "1",
             "-y", output_pattern,
         ]
+        # Preview JPEG output tail (overwritten in place at preview_fps).
+        prev_out = [
+            "-q:v", "2",
+            "-f", "image2",
+            "-update", "1",
+            "-y", str(self._preview_path),
+        ]
+
+        if backend == "ddagrab":
+            # ddagrab is a *source* filter (no -i input): the filtergraph starts
+            # with it, downloads GPU→system memory, then splits like gdigrab.
+            src = self._ddagrab_source(monitor)
+            if self._preview_path is not None:
+                filt = (
+                    f"{src},split=2[rec][prev];"
+                    f"[rec]scale={self._width}:{self._height},format=yuv420p[recout];"
+                    f"[prev]fps={self._preview_fps},scale={self._preview_width}:-2,"
+                    f"format=yuv420p[prevout]"
+                )
+                return [
+                    resolve_ffmpeg(), "-hide_banner",
+                    "-filter_complex", filt,
+                    "-map", "[recout]", *seg_out,
+                    "-map", "[prevout]", *prev_out,
+                ]
+            filt = f"{src},scale={self._width}:{self._height},format=yuv420p[recout]"
+            return [
+                resolve_ffmpeg(), "-hide_banner",
+                "-filter_complex", filt,
+                "-map", "[recout]", *seg_out,
+            ]
+
+        # ── gdigrab (fallback) ──────────────────────────────────────────────
+        gdi_input = [
+            resolve_ffmpeg(),
+            "-f", "gdigrab",
+            "-framerate", str(self._framerate),
+            "-offset_x", str(monitor.x),
+            "-offset_y", str(monitor.y),
+            "-video_size", f"{monitor.width}x{monitor.height}",
+            "-draw_mouse", "0",
+            "-i", "desktop",
+        ]
+        if self._preview_path is not None:
+            filt = (
+                f"[0:v]split=2[rec][prev];"
+                f"[rec]scale={self._width}:{self._height},format=yuv420p[recout];"
+                f"[prev]fps={self._preview_fps},scale={self._preview_width}:-2,"
+                f"format=yuv420p[prevout]"
+            )
+            return [
+                *gdi_input,
+                "-filter_complex", filt,
+                "-map", "[recout]", *seg_out,
+                "-map", "[prevout]", *prev_out,
+            ]
+        vf_filter = f"scale={self._width}:{self._height},format=yuv420p"
+        return [*gdi_input, "-vf", vf_filter, *seg_out]
+
+    def _ddagrab_source(self, monitor: MonitorInfo) -> str:
+        """Return the ddagrab source filterchain (up to the split point).
+
+        ddagrab selects a monitor by DXGI ``output_idx`` (NOT virtual-desktop
+        coordinates) and emits D3D11 GPU frames, so we immediately ``hwdownload``
+        to system memory and pick ``bgra`` (ddagrab's native 8-bit format) before
+        any software scaling/encoding.  ``draw_mouse=0`` keeps the cursor out of
+        the recording exactly as the gdigrab path did — but unlike gdigrab this
+        costs NO desktop-side CAPTUREBLT cursor flicker (the DDA composites the
+        cursor GPU-side).  Whole-monitor capture needs only ``output_idx``; the
+        existing ``scale`` filter downstream absorbs the physical-pixel size, so
+        no offset/video_size (which would be physical-pixel intra-monitor crops).
+        """
+        output_idx = max(0, int(getattr(monitor, "index", 0) or 0))
+        return (
+            f"ddagrab=output_idx={output_idx}:framerate={self._framerate}:draw_mouse=0,"
+            f"hwdownload,format=bgra"
+        )
+
+    def _resolve_backend(self) -> str:
+        """Resolve the capture backend, honouring an explicit override.
+
+        ``auto`` (default) prefers ddagrab (DXGI, no cursor flicker) and falls
+        back to gdigrab if the DXGI path is unavailable on this machine.
+        """
+        if self._capture_backend in ("ddagrab", "gdigrab"):
+            return self._capture_backend
+        if self._ddagrab_available():
+            self._log.info("Capture backend: ddagrab (DXGI Desktop Duplication).")
+            return "ddagrab"
+        self._log.warning(
+            "ddagrab (DXGI) unavailable — falling back to gdigrab. "
+            "The on-screen mouse cursor may flicker during capture."
+        )
+        return "gdigrab"
+
+    def _ddagrab_available(self) -> bool:
+        """Probe whether FFmpeg can capture via ddagrab here (memoised per instance).
+
+        Captures two frames to the null muxer.  ``-frames:v`` is count-based, so
+        it terminates cleanly even though ddagrab's ``dup_frames`` default keeps a
+        static desktop emitting frames (a time-based ``-t`` would NOT stop it).
+        """
+        if self._ddagrab_probe is not None:
+            return self._ddagrab_probe
+        ok = False
+        try:
+            probe = [
+                resolve_ffmpeg(), "-hide_banner", "-loglevel", "error",
+                "-filter_complex",
+                "ddagrab=output_idx=0:framerate=5,hwdownload,format=bgra",
+                "-frames:v", "2", "-f", "null", "-",
+            ]
+            result = subprocess.run(
+                probe,
+                capture_output=True,
+                timeout=12,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            ok = result.returncode == 0
+            if not ok:
+                tail = result.stderr.decode("utf-8", errors="replace").strip()[-400:]
+                self._log.debug("ddagrab probe failed (rc={}): {}", result.returncode, tail)
+        except Exception as exc:  # noqa: BLE001
+            self._log.debug("ddagrab probe raised: {}", exc)
+            ok = False
+        self._ddagrab_probe = ok
+        return ok
 
     def _recover_existing_segments(self, output_dir: Path) -> None:
         """Re-index .ts files left on disk from a previous run."""
