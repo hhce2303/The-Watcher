@@ -16,12 +16,31 @@ from loguru import logger
 _DEFAULT_EXTRA = {"phase": "-", "mon": "-", "sid": "-", "evt": "-"}
 
 
-def _qt_sink(message: "loguru.Message") -> None:  # type: ignore[name-defined]
-    """Forward log records to the Qt UI log panel (if the UI is running)."""
+_event_bus = None  # wired via set_event_bus() once core/api exists; None = no-op sink
+
+
+def set_event_bus(bus) -> None:
+    """Point the log sink at the shared EventBus (main.py, after building `api`).
+
+    Qt-free replacement for the old QML log panel sink (ADR-0009/C3): logs
+    become a ``LogMessage`` bus event, so both the IPC-connected React UI and
+    (while it still exists) QML's Connections-based log panel can consume it.
+    """
+    global _event_bus
+    _event_bus = bus
+
+
+def _bus_sink(message: "loguru.Message") -> None:  # type: ignore[name-defined]
+    """Publish INFO+ records as a LogMessage bus event; no-op before the bus exists."""
+    if _event_bus is None:
+        return
+    record = message.record
+    if record["name"].startswith("app.adapters.ipc"):
+        return  # avoid feeding pipe-transport chatter back through the pipe
     try:
-        from app.adapters.ui.log_handler import emitter  # noqa: PLC0415
-        emitter.log_record.emit(str(message))
-    except Exception:  # noqa: BLE001 — UI may not be initialised yet
+        from app.core.api import dto  # noqa: PLC0415
+        _event_bus.publish(dto.LogMessage(message=record["message"]))
+    except Exception:  # noqa: BLE001 — logging must never crash the app
         pass
 
 
@@ -73,11 +92,9 @@ def configure_logging(log_level: str = "INFO") -> None:
         ),
     )
 
-    # Qt UI panel sink — no-ops silently until the UI is launched.
-    logger.add(
-        _qt_sink,
-        level="DEBUG",
-        format="{time:HH:mm:ss} | {level} | {extra[phase]} | {message}",
-    )
+    # Bus sink — no-ops silently until set_event_bus() is called (core/api not
+    # built yet at configure_logging() time). INFO+ only: DEBUG would flood
+    # the UI's notification strip.
+    logger.add(_bus_sink, level="INFO")
 
     logger.debug("Logging initialised at level={}", log_level)

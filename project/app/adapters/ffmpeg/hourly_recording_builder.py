@@ -14,8 +14,9 @@ from collections.abc import Callable
 
 from app.adapters.ffmpeg.encoder_selector import codec_tag, effective_codec
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
-from app.adapters.ffmpeg.process_guard import assign_to_job
+from app.adapters.ffmpeg.process_guard import assign_to_batch_job, batch_slot
 from app.core.recording_service.models import Segment
+from app.infrastructure.proc_telemetry import track_process, untrack_process
 
 
 def _floor_to_window(dt: datetime, window_minutes: int) -> datetime:
@@ -280,24 +281,28 @@ class RecordingClipBuilder:
                 self._window_mins,
             )
 
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            assign_to_job(proc)
-            with self._proc_lock:
-                self._active_proc = proc
-            try:
-                _, stderr_bytes = proc.communicate(timeout=3600)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                raise
-            finally:
+            label = f"clip-m{self._monitor_idx}"
+            with batch_slot():
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                assign_to_batch_job(proc)
+                track_process(proc.pid, category="batch", label=label)
                 with self._proc_lock:
-                    self._active_proc = None
+                    self._active_proc = proc
+                try:
+                    _, stderr_bytes = proc.communicate(timeout=3600)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                    raise
+                finally:
+                    untrack_process(proc.pid)
+                    with self._proc_lock:
+                        self._active_proc = None
 
             if proc.returncode == 0:
                 tmp.replace(output)

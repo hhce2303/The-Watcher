@@ -17,6 +17,7 @@ from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
 from app.adapters.ffmpeg.process_guard import assign_to_job
 from app.core.ports.recorder_port import RecorderPort
 from app.core.recording_service.models import MonitorInfo, Segment
+from app.infrastructure.proc_telemetry import track_process, untrack_process
 
 # Grace period added on top of segment_duration for stall detection.
 # The watchdog fires on_crash if no new segment appears within
@@ -51,6 +52,7 @@ class FFmpegRecorderAdapter(RecorderPort):
         height: int = 1080,
         capture_source: str = "desktop",
         capture_backend: str = "auto",
+        capture_pipeline: str = "auto",
         codec: str = "h264",
         on_segment_ready: Optional[Callable[[Segment], None]] = None,
         on_crash: Optional[Callable[[], None]] = None,
@@ -74,6 +76,14 @@ class FFmpegRecorderAdapter(RecorderPort):
         self._capture_backend = (capture_backend or "auto").lower()
         self._resolved_backend: Optional[str] = None
         self._ddagrab_probe: Optional[bool] = None
+        # Capture filtergraph: "auto" | "zerocopy" | "legacy" — see
+        # _resolve_pipeline().  Only meaningful when the backend is ddagrab.
+        self._capture_pipeline = (capture_pipeline or "auto").lower()
+        self._resolved_pipeline: Optional[str] = None
+        # Zero-copy probe cache, keyed by "{family}:{monitor.index}" — a GPU
+        # filter chain that fails on one monitor (e.g. capture on a dGPU while
+        # the encoder resolves to the iGPU) may still work on another.
+        self._zerocopy_probe: dict[str, bool] = {}
         self._codec = codec
         self._on_segment_ready = on_segment_ready
         self._on_crash = on_crash
@@ -132,6 +142,7 @@ class FFmpegRecorderAdapter(RecorderPort):
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         assign_to_job(self._process)
+        track_process(self._process.pid, category="recorder", label=self._mon_tag)
         self._last_segment_time = time.monotonic()
 
         self._stderr_thread = threading.Thread(
@@ -152,6 +163,7 @@ class FFmpegRecorderAdapter(RecorderPort):
     def stop(self) -> None:
         self._stop_event.set()
         if self._process is not None:
+            untrack_process(self._process.pid)
             self._process.terminate()
             try:
                 self._process.wait(timeout=10)
@@ -222,11 +234,19 @@ class FFmpegRecorderAdapter(RecorderPort):
         # Live capture: real-time preset so FFmpeg keeps up with the screen.
         encoder, encoder_flags = get_encoder(self._codec, realtime=True)
         backend = self._resolved_backend or "gdigrab"
+        pipeline = self._resolve_pipeline(monitor, encoder, backend)
+        self._resolved_pipeline = pipeline
+        family = _encoder_family(encoder)
+        if pipeline == "zerocopy" and family == "qsv":
+            # vpp_qsv already pipelines internally; async_depth=1 on the encoder
+            # avoids an extra frame of GPU queuing latency (no CPU effect,
+            # validated locally — see optimization research §2).
+            encoder_flags = [*encoder_flags, "-async_depth", "1"]
 
         self._log.info(
-            "[RECORDER] {} — backend={} region={}x{} offset=({},{}) idx={} "
-            "encoder={} preview={}",
-            monitor.display_name, backend,
+            "[RECORDER] {} — backend={} pipeline={} region={}x{} offset=({},{}) "
+            "idx={} encoder={} preview={}",
+            monitor.display_name, backend, pipeline,
             monitor.width, monitor.height, monitor.x, monitor.y, monitor.index,
             encoder, self._preview_path or "off",
         )
@@ -250,6 +270,21 @@ class FFmpegRecorderAdapter(RecorderPort):
             "-update", "1",
             "-y", str(self._preview_path),
         ]
+
+        if backend == "ddagrab" and pipeline == "zerocopy":
+            # Zero-copy: frames stay on the GPU (D3D11 → QSV/CUDA) through the
+            # scale/format-convert step; only the low-fps preview branch comes
+            # back to system memory. ~66% less CPU/monitor on QSV (validated
+            # locally — see ffmpeg-pipeline-optimization-research.md §2-3.1).
+            filt = self._zerocopy_filtergraph(monitor, family)
+            cmd = [
+                resolve_ffmpeg(), "-hide_banner",
+                "-filter_complex", filt,
+                "-map", "[recout]", *seg_out,
+            ]
+            if self._preview_path is not None:
+                cmd += ["-map", "[prevout]", *prev_out]
+            return cmd
 
         if backend == "ddagrab":
             # ddagrab is a *source* filter (no -i input): the filtergraph starts
@@ -320,6 +355,135 @@ class FFmpegRecorderAdapter(RecorderPort):
             f"ddagrab=output_idx={output_idx}:framerate={self._framerate}:draw_mouse=0,"
             f"hwdownload,format=bgra"
         )
+
+    def _ddagrab_source_zerocopy(self, monitor: MonitorInfo) -> str:
+        """ddagrab source filterchain for the zero-copy path — no ``hwdownload``.
+
+        Frames stay as D3D11 GPU surfaces so ``hwmap`` can hand them straight to
+        the QSV/CUDA device (see :meth:`_zerocopy_filtergraph`).
+        """
+        output_idx = max(0, int(getattr(monitor, "index", 0) or 0))
+        return f"ddagrab=output_idx={output_idx}:framerate={self._framerate}:draw_mouse=0"
+
+    def _zerocopy_filtergraph(self, monitor: MonitorInfo, family: Optional[str]) -> str:
+        """Build the zero-copy filtergraph for ``family`` ("qsv" or "cuda").
+
+        QSV: ``hwmap=derive_device=qsv`` + ``vpp_qsv`` does the BGRA→NV12 convert
+        and scale on the GPU. CUDA (NVENC): ``hwmap=derive_device=cuda`` +
+        ``scale_cuda`` is the documented equivalent — not validated locally (no
+        NVIDIA hardware on the benchmark machine); the per-monitor probe in
+        :meth:`_zerocopy_available` is what actually gates whether this path is
+        used, so an unsupported driver quietly falls back to legacy.
+        """
+        src = self._ddagrab_source_zerocopy(monitor)
+        if family == "qsv":
+            # out_range=tv: vpp_qsv defaults to full-range ("pc") output because
+            # ddagrab's D3D11 desktop frames are full-range, which produced
+            # yuvj420p segments — a color-range mismatch against the legacy
+            # pipeline's yuv420p (limited/tv) that would flash at the boundary
+            # if both kinds of segment ever get lossless-concatenated together.
+            # Verified locally: forces yuv420p/tv, matching legacy exactly.
+            gpu_filt = (
+                f"hwmap=derive_device=qsv,"
+                f"vpp_qsv=w={self._width}:h={self._height}:format=nv12:"
+                f"async_depth=1:out_range=tv"
+            )
+        else:
+            # CUDA/NVENC: scale_cuda has no documented range option — not
+            # validated locally (no NVIDIA hardware here). Whoever runs the
+            # RTX validation in PoC-1 (§8) must re-check color range parity
+            # against the legacy/QSV output the same way this QSV path was.
+            gpu_filt = (
+                f"hwmap=derive_device=cuda,"
+                f"scale_cuda=w={self._width}:h={self._height}:format=yuv420p"
+            )
+        if self._preview_path is not None:
+            return (
+                f"{src},split=2[rec][prev];"
+                f"[rec]{gpu_filt}[recout];"
+                f"[prev]fps={self._preview_fps},hwdownload,format=bgra,"
+                f"scale={self._preview_width}:-2,format=yuv420p[prevout]"
+            )
+        return f"{src},{gpu_filt}[recout]"
+
+    def _resolve_pipeline(self, monitor: MonitorInfo, encoder: str, backend: str) -> str:
+        """Resolve "zerocopy" vs "legacy" for this monitor/encoder/backend.
+
+        Zero-copy only exists for ddagrab + a hardware encoder with a documented
+        GPU filter path (QSV, NVENC); gdigrab frames are already in system
+        memory and AMF/CPU encoders have no ``hwmap`` chain here, so both always
+        resolve to "legacy". Honours ``CAPTURE_PIPELINE`` (auto/zerocopy/legacy).
+        """
+        if backend != "ddagrab":
+            return "legacy"
+        if self._capture_pipeline == "legacy":
+            return "legacy"
+
+        family = _encoder_family(encoder)
+        if family is None:
+            if self._capture_pipeline == "zerocopy":
+                self._log.warning(
+                    "CAPTURE_PIPELINE=zerocopy forced but encoder {} has no "
+                    "zero-copy path — using legacy.", encoder,
+                )
+            return "legacy"
+
+        if self._zerocopy_available(monitor, encoder, family):
+            self._log.info("Capture pipeline: zerocopy ({}).", family)
+            return "zerocopy"
+        if self._capture_pipeline == "zerocopy":
+            self._log.warning(
+                "CAPTURE_PIPELINE=zerocopy forced but the {} zero-copy probe "
+                "failed on this monitor — falling back to legacy.", family,
+            )
+        return "legacy"
+
+    def _zerocopy_available(self, monitor: MonitorInfo, encoder: str, family: str) -> bool:
+        """Probe whether the zero-copy filtergraph works for this monitor (memoised).
+
+        Mirrors :meth:`_ddagrab_available`: captures two frames to the null
+        muxer through the real ``hwmap``/``vpp_qsv``/``scale_cuda`` chain, so a
+        capture/encode GPU mismatch (e.g. monitor on the dGPU, encoder resolved
+        to the iGPU) is caught here rather than mid-recording.
+        """
+        cache_key = f"{family}:{max(0, int(getattr(monitor, 'index', 0) or 0))}"
+        cached = self._zerocopy_probe.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Minimal single-output graph (no split/preview pad) at a low framerate
+        # and tiny resolution — only the hwmap/vpp_qsv/scale_cuda chain itself
+        # is under test here.
+        output_idx = max(0, int(getattr(monitor, "index", 0) or 0))
+        if family == "qsv":
+            gpu_filt = "hwmap=derive_device=qsv,vpp_qsv=w=64:h=64:format=nv12:out_range=tv"
+        else:
+            gpu_filt = "hwmap=derive_device=cuda,scale_cuda=w=64:h=64:format=yuv420p"
+        filt = f"ddagrab=output_idx={output_idx}:framerate=5,{gpu_filt}"
+        ok = False
+        try:
+            probe = [
+                resolve_ffmpeg(), "-hide_banner", "-loglevel", "error",
+                "-filter_complex", filt,
+                "-frames:v", "2", "-f", "null", "-",
+            ]
+            result = subprocess.run(
+                probe,
+                capture_output=True,
+                timeout=12,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            ok = result.returncode == 0
+            if not ok:
+                tail = result.stderr.decode("utf-8", errors="replace").strip()[-400:]
+                self._log.debug(
+                    "zero-copy probe ({}) failed (rc={}): {}", family, result.returncode, tail
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._log.debug("zero-copy probe ({}) raised: {}", family, exc)
+            ok = False
+        self._zerocopy_probe[cache_key] = ok
+        return ok
 
     def _resolve_backend(self) -> str:
         """Resolve the capture backend, honouring an explicit override.
@@ -424,6 +588,7 @@ class FFmpegRecorderAdapter(RecorderPort):
             # --- Crash detection: FFmpeg process exited unexpectedly ---
             if self._process is not None and self._process.poll() is not None:
                 rc = self._process.returncode
+                untrack_process(self._process.pid)
                 self._process = None
                 if self._stop_event.is_set():
                     break  # intentional stop — do not trigger supervisor restart
@@ -527,6 +692,22 @@ class FFmpegRecorderAdapter(RecorderPort):
                     logger.debug("[ffmpeg] {}", line)
         except Exception as exc:  # noqa: BLE001
             logger.debug("stderr drain ended unexpectedly: {}", exc)
+
+
+def _encoder_family(encoder: str) -> Optional[str]:
+    """Return the zero-copy GPU family for ``encoder``, or ``None`` if unsupported.
+
+    Only ``*_qsv`` (Intel Quick Sync — ``hwmap`` derives a QSV device, ``vpp_qsv``
+    scales) and ``*_nvenc`` (NVIDIA — ``hwmap`` derives a CUDA device,
+    ``scale_cuda`` scales) have a documented ddagrab zero-copy path. AMF and
+    software encoders keep the legacy hwdownload pipeline — see
+    ffmpeg-pipeline-optimization-research.md §3.1/§5.
+    """
+    if encoder.endswith("_qsv"):
+        return "qsv"
+    if encoder.endswith("_nvenc"):
+        return "cuda"
+    return None
 
 
 def _parse_start_time(filename: str) -> Optional[datetime]:

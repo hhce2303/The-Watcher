@@ -67,6 +67,13 @@ class Settings:
     # "ddagrab" (force DXGI Desktop Duplication — no GDI cursor flicker), or
     # "gdigrab" (force legacy GDI BitBlt).  Default "auto".
     capture_backend: str = os.getenv("CAPTURE_BACKEND", "auto")
+    # Capture filtergraph: "auto" (zero-copy on ddagrab+QSV/NVENC, else legacy),
+    # "zerocopy" (force — falls back to legacy per-monitor if the GPU filter
+    # chain fails to probe), or "legacy" (always hwdownload to system memory).
+    # Zero-copy keeps frames on the GPU (hwmap→vpp_qsv / hwmap→CUDA) instead of
+    # downloading every frame before scaling — ~66% less CPU/monitor on QSV.
+    # See project/docs/migration/ffmpeg-pipeline-optimization-research.md §3.1.
+    capture_pipeline: str = os.getenv("CAPTURE_PIPELINE", "auto")
     capture_framerate: int = int(os.getenv("CAPTURE_FRAMERATE", "30"))
     output_width: int = int(os.getenv("OUTPUT_WIDTH", "1920"))
     output_height: int = int(os.getenv("OUTPUT_HEIGHT", "1080"))
@@ -196,6 +203,33 @@ class Settings:
     # TRACKER_MAX_AGE — frames a track may go unmatched before eviction.
     #   At 2fps, 5 frames = 2.5 s of grace.
     tracker_max_age: int = int(os.getenv("TRACKER_MAX_AGE", "5"))
+
+    # ── Batch FFmpeg governance (PoC-2, ffmpeg-pipeline-optimization-research.md §4) ──
+    # MAX_BATCH_FFMPEG — max offline/background FFmpeg encodes running at once
+    #   (hourly/combined clip builders, mp4 converter, batch analyzer). Flattens
+    #   CPU/RAM spikes and keeps concurrent HW-encode sessions under vendor
+    #   limits (NVENC consumer: 8 sessions/system). Default 1 = fully serialized.
+    max_batch_ffmpeg: int = int(os.getenv("MAX_BATCH_FFMPEG", "1"))
+
+    # BATCH_JOB_WEIGHT — relative CPU share (1-9) for the shared batch Job
+    #   Object when the live recorder needs the CPU. WEIGHT_BASED (not a hard
+    #   cap), so batch work still completes, just yields under contention.
+    batch_job_weight: int = int(os.getenv("BATCH_JOB_WEIGHT", "2"))
+
+    # BATCH_JOB_MEMORY_LIMIT_MB — hard RAM ceiling for the shared batch Job
+    #   Object (0 = no limit). Caps a runaway grid/convert re-encode.
+    batch_job_memory_limit_mb: int = int(os.getenv("BATCH_JOB_MEMORY_LIMIT_MB", "1536"))
+
+    # BATCH_CPU_HARD_CAP_PERCENT — optional hard CPU ceiling for batch work
+    #   (0 = off, use BATCH_JOB_WEIGHT instead). WARNING: a hard cap FREEZES
+    #   threads once the interval budget is spent — never apply to the recorder.
+    batch_cpu_hard_cap_percent: int = int(os.getenv("BATCH_CPU_HARD_CAP_PERCENT", "0"))
+
+    # PROC_TELEMETRY_INTERVAL_SECONDS — psutil sampling interval (CPU%, RSS) for
+    #   tracked recorder/batch FFmpeg processes. Feeds the ADR-0007 profiling gate.
+    proc_telemetry_interval_seconds: float = float(
+        os.getenv("PROC_TELEMETRY_INTERVAL_SECONDS", "10")
+    )
 
     # Logging
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

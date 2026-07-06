@@ -18,7 +18,8 @@ from app.adapters.ffmpeg.encoder_selector import (
     tag_for_encoder,
 )
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
-from app.adapters.ffmpeg.process_guard import assign_to_job
+from app.adapters.ffmpeg.process_guard import assign_to_batch_job, batch_slot
+from app.infrastructure.proc_telemetry import track_process, untrack_process
 
 
 def _grid2_filter(n: int, cell: str = "1280x720") -> tuple[str, str]:
@@ -397,24 +398,27 @@ class CombinedClipBuilder:
 
             cmd += ["-movflags", "+faststart", "-y", str(tmp)]
 
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            assign_to_job(proc)
-            with self._proc_lock:
-                self._active_proc = proc
-            try:
-                _, stderr_bytes = proc.communicate(timeout=3600)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                raise
-            finally:
+            with batch_slot():
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                assign_to_batch_job(proc)
+                track_process(proc.pid, category="batch", label="combined")
                 with self._proc_lock:
-                    self._active_proc = None
+                    self._active_proc = proc
+                try:
+                    _, stderr_bytes = proc.communicate(timeout=3600)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                    raise
+                finally:
+                    untrack_process(proc.pid)
+                    with self._proc_lock:
+                        self._active_proc = None
 
             if proc.returncode != 0:
                 tmp.unlink(missing_ok=True)
