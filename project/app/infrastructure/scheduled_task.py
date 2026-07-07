@@ -69,8 +69,12 @@ def build_task_xml(user: str | None = None) -> str:
     Encodes the three load-bearing settings: a logon trigger, restart-on-failure
     every minute, and IgnoreNew (no second instance).  The action is derived
     from ``launch_argv`` so it stays consistent with autostart and relaunch.
+    This watchdog only ever runs for the operator role — pass ``--daemon``
+    explicitly (C4, ADR-0010): resolve_mode()'s bare-argv fallback now defaults
+    to daemon for any configured role anyway, but being explicit here means a
+    restart never depends on that fallback (or on ``--qml`` residue in argv).
     """
-    argv = launch_argv()
+    argv = launch_argv(["--daemon"])
     command = _xml_escape(argv[0])
     arguments = _xml_escape(" ".join(argv[1:]))
     principal = _xml_escape(user if user is not None else _current_user())

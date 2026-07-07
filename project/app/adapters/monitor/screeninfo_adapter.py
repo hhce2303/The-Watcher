@@ -53,11 +53,12 @@ class ScreeninfoMonitorAdapter(MonitorPort):
         except Exception as exc:  # noqa: BLE001
             logger.error("Monitor enumeration failed: {}", exc)
 
-        # Phase 1 verification: log each monitor with all properties so we can
-        # confirm correct detection before wiring up recording and UI.
-        logger.info("MonitorPort: {} monitor(s) detected.", len(monitors))
+        # DEBUG only: this runs on every poll (every 5s, MonitorDetectionService), so INFO
+        # would spam the log file and — since C3 — the UI's log_message notification strip.
+        # MonitorDetectionService._do_poll() logs at INFO when the monitor set actually changes.
+        logger.debug("MonitorPort: {} monitor(s) detected.", len(monitors))
         for m in monitors:
-            logger.info(
+            logger.debug(
                 "  [MONITOR] {} | {}×{} @ ({},{}) | primary={} | index={} | fp={}",
                 m.display_name, m.width, m.height, m.x, m.y,
                 m.is_primary, m.index, m.fingerprint,

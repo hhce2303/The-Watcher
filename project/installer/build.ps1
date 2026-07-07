@@ -3,9 +3,12 @@
     Builds the The Watcher Windows executable (Milestone 8).
 
 .DESCRIPTION
-    1. Creates a clean build venv at C:\TW_Venv (comma-free path) to work
-       around a Qt/PyInstaller bug where QLibraryInfo.path() mis-parses the
-       PySide6 plugins directory when the venv path contains a comma.
+    1. Creates a clean build venv at C:\TW_Venv (comma-free path). This was
+       originally a workaround for a Qt/PyInstaller path-parsing bug; QML/
+       PySide6 are gone now (F3), but the repo path still contains a comma
+       ("SIG Systems, Inc"), and other PyInstaller hooks have shown similar
+       comma-sensitivity, so the clean-path venv/junction stays as a safe
+       default rather than re-introducing that risk.
     2. Creates a junction C:\TW_Build -> project root (also comma-free) so
        PyInstaller's pathex/spec work correctly.
     3. Runs PyInstaller with the spec file.
@@ -45,11 +48,7 @@ Write-Host "=== The Watcher Build ===" -ForegroundColor Cyan
 Write-Host "Project: $ProjectRoot"
 
 # ---------------------------------------------------------------------------
-# Step 1: Create a comma-free venv for PyInstaller
-# Qt's QLibraryInfo.path() breaks when the venv path contains a comma, which
-# causes the hook-PySide6.QtNetwork.py hook to raise:
-#   "Qt plugin directory '...' does not exist!"
-# Using a clean-path venv avoids this entirely.
+# Step 1: Create a comma-free venv for PyInstaller (see .DESCRIPTION above).
 # ---------------------------------------------------------------------------
 $CleanPip        = "$CleanVenv\Scripts\pip.exe"
 $CleanPyInstaller = "$CleanVenv\Scripts\pyinstaller.exe"
@@ -62,12 +61,12 @@ if ($NeedsVenvSetup) {
     Write-Host "Installing packages into clean venv..." -ForegroundColor Yellow
     & $CleanPip install --upgrade pip --quiet
     & $CleanPip install `
-        "PySide6==6.11.0" `
         "screeninfo==0.8.1" `
         "psutil==7.2.2" `
         "loguru==0.7.3" `
         "python-dotenv==1.2.2" `
         "pydantic==2.13.3" `
+        "websockets==16.0" `
         "pyinstaller==6.20.0" `
         "pyinstaller-hooks-contrib==2026.4" `
         --quiet

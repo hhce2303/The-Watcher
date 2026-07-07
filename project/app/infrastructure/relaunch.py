@@ -13,24 +13,26 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import Optional
 
 from loguru import logger
 
 
-def _relaunch_argv() -> list[str]:
+def _relaunch_argv(mode_args: Optional[Sequence[str]] = None) -> list[str]:
     """Command line that re-launches this app.
 
     Delegates to ``launch_target.launch_argv`` — the single source of truth for
     frozen-vs-source launch, shared with autostart and the restart watchdog.
     """
     from app.infrastructure.launch_target import launch_argv  # noqa: PLC0415
-    return launch_argv()
+    return launch_argv(mode_args)
 
 
 def relaunch_and_exit(
     teardown: Callable[[], None],
     release_lock: Callable[[], None],
+    mode_args: Optional[Sequence[str]] = None,
 ) -> None:
     """Tear down the current instance, spawn a fresh one, and exit.
 
@@ -57,7 +59,7 @@ def relaunch_and_exit(
     except Exception:  # noqa: BLE001
         logger.exception("relaunch: release_lock raised — continuing with relaunch.")
 
-    argv = _relaunch_argv()
+    argv = _relaunch_argv(mode_args)
     # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: the child is not tied to this
     # process's console or lifetime, so it keeps running after we exit.
     creationflags = 0

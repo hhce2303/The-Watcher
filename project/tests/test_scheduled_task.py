@@ -40,9 +40,12 @@ class TestBuildTaskXml:
         assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in xml
 
     def test_action_uses_launch_target_frozen(self, monkeypatch):
+        # This watchdog only ever runs the operator role — the frozen exe
+        # still needs --daemon so a restart never falls through to QML /
+        # resolve_mode()'s bare-argv default (C4, ADR-0010).
         xml = self._xml(monkeypatch)
         assert "<Command>C:\\Watcher\\watcher.exe</Command>" in xml
-        assert "<Arguments>" not in xml  # frozen exe has no args
+        assert "<Arguments>--daemon</Arguments>" in xml
 
     def test_action_includes_module_args_in_source_mode(self, monkeypatch):
         monkeypatch.delattr(sys, "frozen", raising=False)
@@ -50,7 +53,7 @@ class TestBuildTaskXml:
         from app.infrastructure.scheduled_task import build_task_xml
         xml = build_task_xml(user="DOMAIN\\op")
         assert "<Command>C:\\Py\\python.exe</Command>" in xml
-        assert "<Arguments>-m app.main</Arguments>" in xml
+        assert "<Arguments>-m app.main --daemon</Arguments>" in xml
 
     def test_xml_escapes_special_chars(self, monkeypatch):
         monkeypatch.setattr(sys, "frozen", True, raising=False)

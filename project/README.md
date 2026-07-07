@@ -1,6 +1,9 @@
 # The Watcher
 
-Always-on screen recorder with pre/post event capture. Built with Python + FFmpeg + PySide6/QML using a pragmatic Hexagonal (Ports & Adapters) architecture.
+Always-on screen recorder with pre/post event capture. Built with a Python + FFmpeg headless
+backend (Hexagonal / Ports & Adapters) and a **Tauri 2.0 + React** UI talking to it over an
+authenticated named pipe. PySide6/QML has been fully removed (F3, 2026-07-06) — see
+[`docs/migration/`](docs/migration/README.md) for the migration history.
 
 ---
 
@@ -41,12 +44,13 @@ Role is configured via `USER_ROLE` in `.env`. The `supervisor` role skips the en
 ### Request flow (IT ↔ Supervisor)
 
 ```
-Supervisor UI
-  → AppBridge.sendClipRequest()
-  → ClipRequestClient (WS)
-       → ClipRequestServer (WS) on IT machine
+Supervisor UI (React)
+  → ipc.sendClipRequest() (named pipe)
+  → RequestsApi.on_request_received
+  → ClipRequestClient (websockets)
+       → ClipRequestServer (websockets) on IT machine
             → JsonRequestAdapter (persisted on disk)
-            → ITInboxPanel (QML)
+            → ITInboxPanel (React), via `request_received` bus event
 ```
 
 ---
@@ -88,44 +92,34 @@ project/
 │   │   │   └── user_config_adapter.py
 │   │   ├── monitor/
 │   │   │   └── screeninfo_adapter.py
-│   │   ├── ws/
-│   │   │   ├── request_server.py    ← IT WebSocket server
-│   │   │   └── request_client.py    ← Supervisor WebSocket client
-│   │   └── ui/
-│   │       ├── Main.qml             ← root window, tab navigation
-│   │       ├── app_bridge.py        ← Python ↔ QML contract (QObject)
-│   │       ├── settings_bridge.py   ← settings panel contract
-│   │       ├── tray_icon.py         ← system tray
-│   │       ├── screenshot_provider.py ← GDI monitor thumbnail provider
-│   │       └── qml/
-│   │           ├── Tokens.qml           ← design tokens (singleton)
-│   │           ├── BufferTimeline.qml   ← segment timeline visualization
-│   │           ├── PreRollOverlay.qml   ← pre-roll countdown overlay
-│   │           ├── AnnotationModal.qml  ← clip annotation dialog
-│   │           ├── MiniMode.qml         ← compact always-on-top mode
-│   │           ├── SettingsView.qml     ← encoder / path / role settings
-│   │           ├── HealthBadge.qml      ← recording health indicator
-│   │           ├── ClipBrowser.qml      ← file browser (local + UNC/NAS)
-│   │           ├── SupervisorView.qml   ← operator list + request form
-│   │           ├── ITInboxPanel.qml     ← clip request inbox (IT role)
-│   │           ├── Statusbar.qml
-│   │           └── Components/
-│   │               ├── WDropdown.qml
-│   │               ├── WHotkey.qml
-│   │               ├── WPathInput.qml
-│   │               ├── WStepper.qml
-│   │               ├── WToggle.qml
-│   │               └── WSeg.qml
+│   │   └── ws/
+│   │       ├── request_server.py    ← IT server (asyncio `websockets`, Qt-free)
+│   │       └── request_client.py    ← Supervisor client (asyncio `websockets`, Qt-free)
 │   │
 │   ├── infrastructure/
 │   │   ├── config.py        ← Pydantic settings (.env)
-│   │   ├── logging_setup.py ← loguru configuration
+│   │   ├── logging_setup.py ← loguru configuration (bus sink, no Qt)
 │   │   └── autostart.py     ← Windows registry autostart
 │   │
-│   └── main.py              ← startup wiring (services → bridge → QML engine)
+│   └── main.py              ← startup wiring (services → core/api Facade → IPC pipe)
+│
+├── src-tauri/                ← Tauri 2.0 Rust shell
+│   └── src/
+│       ├── lib.rs            ← app builder, single-instance, tray, window close policy
+│       ├── ipc.rs            ← named-pipe client, connects to `core/api` router
+│       ├── media_protocol.rs ← `watcher://` custom protocol (preview + clip streaming, Range support)
+│       ├── tray.rs           ← role-aware tray menu
+│       └── policy.rs         ← `AppPolicy` (role/window-close rules)
+│
+├── src/                       ← React UI (TypeScript, Vite)
+│   ├── App.tsx                ← role-aware router (wizard / AppShell / ITEditorView / MiniMode)
+│   ├── shell/                 ← AppShell, TabBar, Statusbar, HealthBadge, WindowControls
+│   ├── features/               ← recording, clips, player, settings, supervisor, delivery, mini, editor, it
+│   ├── lib/                    ← ipc.ts (typed command client), events.ts (typed bus events)
+│   └── types/dto.gen.ts        ← generated from `core/api/dto.py` (Pydantic → JSON Schema → TS)
 │
 ├── installer/
-│   ├── build.ps1            ← PyInstaller build script
+│   ├── build.ps1            ← PyInstaller build script (headless backend only)
 │   ├── install.ps1          ← install to %LOCALAPPDATA%
 │   └── The Watcher.iss      ← Inno Setup config
 │
@@ -134,63 +128,35 @@ project/
 
 ---
 
-## UI Architecture (QML + AppBridge)
+## UI Architecture (Tauri + React over named-pipe IPC)
 
-The UI was migrated from a legacy `QWidgets`-based `MainWindow` to a **PySide6 QML** interface in the current implementation.
+The UI is **Tauri 2.0 + React**, talking to the headless Python backend over an authenticated
+named pipe (`\\.\pipe\TheWatcher.<username>`, ADR-0011). QML/PySide6 were removed in full during
+F3 (2026-07-06); see [`docs/migration/`](docs/migration/README.md) for the rationale (ADR-0008)
+and [`docs/migration/reference-target-architecture.md`](docs/migration/reference-target-architecture.md)
+for the current contract.
 
-### AppBridge
+### `core/api` — the single entry port
 
-`AppBridge` is the single Python ↔ QML contract (`QObject` registered as a context property). It exposes:
-
-**Properties (QML reads, Python notifies via signals):**
-
-| Property | Type | Description |
-|---|---|---|
-| `isRecording` | `bool` | Whether the recorder is active |
-| `recordSec` | `int` | Total seconds of buffered footage |
-| `monitors` | `list` | All detected monitors with selection state |
-| `clips` | `list` | Recent MP4 clips, newest first |
-| `eventCount` | `int` | Events triggered this session |
-| `currentClipPath` | `str` | Path of the clip loaded in the player |
-| `currentClipInfo` | `map` | Codec / resolution / fps / bitrate |
-
-**Slots (QML calls Python):**
-
-| Slot | Description |
-|---|---|
-| `triggerEvent()` | Mark an event; respects cooldown |
-| `toggleMonitor(fingerprint)` | Toggle clip-selection for a screen |
-| `refreshClips()` | Reload clip list from disk |
-| `loadClip(path)` | Load a clip into the player |
-| `mediaUrl(path)` | Convert local/UNC path → media URL |
-| `listDirectory(path)` | Browse local dirs or UNC shares |
-| `identifyMonitors()` | Force monitor re-detection |
-| `sendClipRequest(json)` | Send a clip request (Supervisor role) |
-| `getMyRequests()` | Supervisor outbox |
-| `getInboxRequests()` | IT inbox |
-| `updateRequestStatus(id, status)` | IT: update request + broadcast via WS |
-| `listAllOperators()` | Enumerate operator folders across all storage shares |
-
-**Signals (Python → QML):**
-
-| Signal | Description |
-|---|---|
-| `recordingFailed(msg)` | Worker crash notification |
-| `clipFailed(msg)` | Clip build failure |
-| `logMessage(msg)` | Log forwarding to QML console panel |
-| `requestShowWindow()` | Tray icon → show window |
-| `requestReceived()` | New clip request arrived (IT role) |
-| `requestStatusChanged(id, status)` | Status update from IT (Supervisor role) |
+`core/api` (Facade + Pydantic DTOs + thread-safe event bus, ADR-0009) is the only door into the
+core. `adapters/ipc/router.py` dispatches ~40 named commands from the frontend to Facade methods;
+the Facade publishes typed DTO events (`dto.py`) on the bus, which the router forwards to the
+frontend as IPC events. React never talks to `core/` directly — only through
+`src/lib/ipc.ts` (commands) and `src/lib/events.ts` (typed event subscriptions).
 
 ### Preview system
 
-The recorder FFmpeg process writes a JPEG at 2fps via `filter_complex` split — the same process as the recording. `AppBridge` polls these files every 500ms on the Qt main thread and pushes frames to `QVideoSink` instances registered by QML.
-
-No separate screen-capture process = no screen flickering during preview.
+The recorder FFmpeg process writes a JPEG at 2fps via `filter_complex` split — the same process as
+the recording. The Tauri `watcher://` custom protocol (`media_protocol.rs`) serves those frames
+(and clip video, with HTTP Range support) directly to `<img>`/`<video>` elements — never through
+the JSON IPC channel (TD-5).
 
 ### Monitor detection
 
-`MonitorDetectionService` polls `screeninfo` every 5 seconds in a background thread. Hot-plug events (monitor connected/disconnected) are forwarded to `RecordingService` (to add/remove workers) and to `AppBridge` via a thread-safe signal bridge (the signal is emitted from the detection thread, handled in the Qt main thread).
+`MonitorDetectionService` polls `screeninfo` every 5 seconds in a background thread. Hot-plug
+events (monitor connected/disconnected) are forwarded to `RecordingService` (to add/remove
+workers) and published on the event bus as `monitors_changed`, consumed by React via
+`useBackendEvent`.
 
 ### Tab layout
 
@@ -245,11 +211,11 @@ WatcherData/
 6. Build one MonitorWorker per detected screen (skipped for supervisor)
 7. RecordingService.start() (if autorecord=true)
 8. RecordingHealthService.start() + DiskSpaceMonitor.start()
-9. QApplication + QQmlApplicationEngine
-10. AppBridge + SettingsBridge registered as QML context properties
-11. Main.qml loaded
-12. WebSocket server (IT) or client (Supervisor) started
-13. TrayIcon created
+9. core/api Facade built (`api.start()`), event bus wired to loguru sink
+10. Requests server (IT) or client (Supervisor) started via `websockets`, `api.requests.configure(...)`
+11. Named-pipe IPC server bound; mode resolved by role (ADR-0010): `--daemon` (Operator, survives
+    UI close) or `--sidecar` (IT/Supervisor, dies with the app via stdin shutdown)
+12. Tauri shell connects over the pipe (unless run headless via `run.ps1 -Mode daemon|sidecar`)
 ```
 
 ---
@@ -313,7 +279,7 @@ Requirements: Python 3.13, FFmpeg installed via winget (`Gyan.FFmpeg`), project 
 Installs to `%LOCALAPPDATA%\The Watcher`. Optionally enables auto-start at Windows login. No desktop shortcut.
 
 **Build notes:**
-- `build.ps1` creates a clean venv at `C:\TW_Venv` and a junction at `C:\TW_Build` to work around a PyInstaller/PySide6 bug where `QLibraryInfo.path()` mis-parses plugin paths when the venv path contains a comma.
+- `build.ps1` creates a clean venv at `C:\TW_Venv` and a junction at `C:\TW_Build` to work around a PyInstaller bug where paths containing a comma break dependency discovery. The backend is packaged headless-only (no QML/PySide6 data files since F3); the Tauri shell is launched separately in dev (`run.ps1`/`run_dev.ps1`) — a production Tauri installer bundling the backend as `externalBin` is future work.
 - Delete `C:\TW_Venv` to force a full dependency reinstall on the next build.
 
 ---
@@ -327,7 +293,7 @@ Installs to `%LOCALAPPDATA%\The Watcher`. Optionally enables auto-start at Windo
 | M2 | Segment index + buffer manager | Done |
 | M3 | Clip builder (trim + concat) | Done |
 | M4 | Event service + cooldown logic | Done |
-| M5 | PySide6 QML operator UI (AppBridge, tab layout) | Done |
+| M5 | PySide6 QML operator UI (AppBridge, tab layout) | Superseded by F2/F3 (React/Tauri) |
 | Monitor | Multi-monitor support + hot-plug detection | Done |
 | M6 | Reliability & hardening (supervisor, disk monitor, health checks) | Done |
 | M7 | Performance optimization (hardware encoder selector, embedded preview) | Done |
@@ -336,8 +302,9 @@ Installs to `%LOCALAPPDATA%\The Watcher`. Optionally enables auto-start at Windo
 | M10 | Clip request system (WebSocket IT↔Supervisor, outbox/inbox UI) | Done |
 | M11 | Clip browser with UNC/NAS support | Done |
 | M12 | Combined multi-monitor grid clip + hourly rolling raw clips | Done |
-| M13 | Editing tools (multi-clip evidence-reel timeline, trim, spatial zoom, lossless fullscreen, smart export) | Planned |
-| M14 | Native Rust segment-compilation engine (PyO3/maturin, lossless TS→MP4 remux/concat/trim) behind `SegmentCompilerPort`, FFmpeg fallback | Planned |
+| M13 | Editing tools (multi-clip evidence-reel timeline, trim, spatial zoom, lossless fullscreen, smart export) | Done (React editor, F2/M9) |
+| M14 | Native Rust segment-compilation engine (PyO3/maturin, lossless TS→MP4 remux/concat/trim) behind `SegmentCompilerPort`, FFmpeg fallback | Done (Track R, `ENGINE_READY=true`) |
+| F2/F3 | UI migration to Tauri 2.0 + React (full parity by role) + total removal of QML/PySide6 | Done (2026-07-06) |
 
 ---
 

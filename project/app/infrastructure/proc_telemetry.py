@@ -113,7 +113,9 @@ class ProcTelemetry:
             except psutil.Error:
                 dead.append(t.pid)
                 continue
-            logger.info(
+            # DEBUG: periodic per-process sampling — diagnostic data for the log file, not
+            # something a user should see as a UI notification (C3 bus sink is INFO+).
+            logger.debug(
                 "[telemetry] category={} label={} pid={} cpu_pct={:.1f} rss_mb={:.1f}",
                 t.category, t.label, t.pid, cpu_pct, rss_mb,
             )

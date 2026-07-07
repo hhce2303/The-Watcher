@@ -41,23 +41,13 @@ _MAIN_SCRIPT  = str(Path(SPECPATH).parent / "app" / "main.py")
 _ENV_EXAMPLE  = str(Path(SPECPATH).parent / ".env.example")
 
 # ---------------------------------------------------------------------------
-# Collect the app's own QML files (Main.qml + qml/ tree + qmldir module files).
-# main.py loads them from Path(__file__).parent/"adapters"/"ui". PyInstaller
-# places the entry script (app/main.py) at the bundle ROOT as main.py, so in a
-# frozen build __file__ is <bundle>/main.py and ui_dir resolves to
-# <bundle>/adapters/ui (NOT <bundle>/app/adapters/ui). The dest path is made
-# relative to app/ to drop the leading "app" and match that layout.
-# Without this the engine fails to load Main.qml -> "QML failed to load" -> exit.
-# ---------------------------------------------------------------------------
-_app_path = Path(SPECPATH).parent / "app"
-_ui_datas = []
-for _f in (_app_path / "adapters" / "ui").rglob("*"):
-    if _f.is_file() and (_f.suffix == ".qml" or _f.name == "qmldir"):
-        _ui_datas.append((str(_f), str(_f.parent.relative_to(_app_path))))
-print(f"[spec] Bundling {len(_ui_datas)} QML/qmldir files")
-
-# ---------------------------------------------------------------------------
 # Analysis
+#
+# QML/PySide6 are gone (F3) — this bundle is the headless daemon/sidecar only.
+# The React/Tauri UI is a separate app that connects over the named pipe; see
+# project/docs/migration/reference-target-architecture.md. Packaging that
+# Tauri UI (and wiring this exe as its externalBin sidecar) is future work —
+# scope was "dev + purge" for this migration pass.
 # ---------------------------------------------------------------------------
 a = Analysis(
     [_MAIN_SCRIPT],
@@ -70,26 +60,20 @@ a = Analysis(
     datas=[
         # Ship .env.example so users can customise paths on first run
         (_ENV_EXAMPLE, "."),
-        # App QML UI (Main.qml + qml/ tree + qmldir module files)
-        *_ui_datas,
     ],
     hiddenimports=[
         # screeninfo platform-specific enumerator (not auto-discovered)
         "screeninfo.enumerators.windows",
-        # PySide6 extras that may not be picked up automatically
-        "PySide6.QtSvg",
-        "PySide6.QtXml",
-        "PySide6.QtDBus",
         # Native Rust segment engine (.pyd). Imported lazily inside
         # rust_segment_compiler._load_native(), so PyInstaller's static analysis
         # can't see it — declare it here so the .pyd is bundled when installed.
         # Harmless if absent from site-packages: PyInstaller just skips it and
         # the app uses the FFmpeg fallback.
         "watcher_segments",
-        # F1 (ADR-0010/0011): the IPC + headless-runtime modules and pywin32
-        # submodules are imported LAZILY inside main.py's --daemon/--sidecar
-        # branch, so static analysis misses them. Declare them so the daemon /
-        # sidecar work in the frozen build.
+        # ADR-0010/0011: the IPC + headless-runtime modules and pywin32
+        # submodules are imported LAZILY inside main()'s daemon/sidecar setup
+        # (the only path now — F3), so static analysis misses them. Declare
+        # them so the daemon/sidecar work in the frozen build.
         "app.adapters.ipc.pipe_server",
         "app.adapters.ipc.pipe_client",
         "app.adapters.ipc.router",
@@ -126,7 +110,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,          # no console window — system tray / GUI only
+    console=False,          # no console window — headless daemon/sidecar (tray lives in Tauri)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

@@ -125,8 +125,9 @@ class RecordingService:
             except Exception:
                 logger.exception("on_worker_added callback raised.")
 
-    def remove_worker(self, monitor_index: int) -> None:
+    def remove_worker(self, monitor: MonitorInfo) -> None:
         """Called by MonitorDetectionService when a monitor is disconnected."""
+        monitor_index = monitor.index
         worker = self._workers.pop(monitor_index, None)
         ctx = self._contexts.get(monitor_index)
         if worker is None:

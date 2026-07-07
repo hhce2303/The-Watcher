@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from typing import Optional, Sequence
 
 from loguru import logger
 
@@ -23,11 +24,18 @@ def is_autostart_enabled() -> bool:
         return False
 
 
-def set_autostart(enabled: bool) -> None:
+def set_autostart(enabled: bool, launch_args: Optional[Sequence[str]] = None) -> None:
     """Register or de-register The Watcher for Windows auto-start.
 
     Only works on Windows; silently no-ops on other platforms.
     Only meaningful when running as a frozen PyInstaller executable.
+
+    ``launch_args`` (e.g. ``["--daemon"]``/``["--sidecar"]``) is required for a
+    correct login launch: resolve_mode()'s bare-argv fallback now defaults to
+    daemon for any configured role (C4, ADR-0010), so a Run-key entry with no
+    flag would headless-launch an IT/Supervisor machine instead of giving them
+    their UI back at login. Callers know the role; this module doesn't (no I/O
+    beyond the registry).
     """
     if sys.platform != "win32":
         return
@@ -38,7 +46,7 @@ def set_autostart(enabled: bool) -> None:
 
         # Single source of truth for the launch command (shared with relaunch +
         # the restart watchdog); handles frozen-vs-source and quoting.
-        launch_cmd = launch_command_string()
+        launch_cmd = launch_command_string(launch_args)
 
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,

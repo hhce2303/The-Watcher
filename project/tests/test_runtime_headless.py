@@ -11,10 +11,11 @@ import threading
 import time
 
 from app.runtime.headless import EXIT_OK, EXIT_PIPE_BIND_FAILED, HeadlessRuntime
-from app.runtime.mode import DAEMON, QML, SIDECAR, resolve_mode
+from app.runtime.mode import DAEMON, SIDECAR, resolve_mode
 
 
 # ── Mode resolution ───────────────────────────────────────────────────
+# QML is gone (F3) — this process only ever runs headless.
 
 def test_resolve_mode_daemon():
     assert resolve_mode(["app", "--daemon"]) == DAEMON
@@ -24,12 +25,21 @@ def test_resolve_mode_sidecar():
     assert resolve_mode(["app", "--sidecar"]) == SIDECAR
 
 
-def test_resolve_mode_default_qml():
-    assert resolve_mode(["app"]) == QML
-
-
 def test_resolve_mode_daemon_wins_over_sidecar():
     assert resolve_mode(["app", "--sidecar", "--daemon"]) == DAEMON
+
+
+def test_resolve_mode_no_flags_operator_defaults_to_daemon():
+    assert resolve_mode(["app"], role="operator") == DAEMON
+
+
+def test_resolve_mode_no_flags_other_roles_default_to_sidecar():
+    # it/supervisor/unconfigured all need a decoupled-from-launcher-lifetime
+    # sidecar so Tauri can spawn/kill them like any other UI session.
+    assert resolve_mode(["app"], role="it") == SIDECAR
+    assert resolve_mode(["app"], role="supervisor") == SIDECAR
+    assert resolve_mode(["app"], role="") == SIDECAR
+    assert resolve_mode(["app"]) == SIDECAR  # role defaults to ""
 
 
 # ── Fakes ─────────────────────────────────────────────────────────────
