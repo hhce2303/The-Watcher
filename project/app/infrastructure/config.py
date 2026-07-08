@@ -149,6 +149,13 @@ class Settings:
     # WebSocket port the IT PC listens on for incoming clip requests.
     it_ws_port: int = int(os.getenv("IT_WS_PORT", "9090"))
 
+    # ── Operator preview HTTP server ──────────────────────────────────────────
+    # Local MJPEG server started only on Operator machines so that any browser
+    # on the same PC can open a live screen preview without Tauri.
+    # Bind host is always 127.0.0.1 (localhost-only); never reachable over LAN.
+    preview_http_host: str = os.getenv("PREVIEW_HTTP_HOST", "127.0.0.1")
+    preview_http_port: int = int(os.getenv("PREVIEW_HTTP_PORT", "8787"))
+
     # ── OneDrive delivery (folder + share link) ───────────────────────────────
     # ONEDRIVE_ROOT — local root the LocalShareAdapter operates on.  Defaults to
     #   the conventional OneDrive sync folder so the desktop client uploads the
