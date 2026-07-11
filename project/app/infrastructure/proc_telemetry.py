@@ -7,7 +7,8 @@ A single background thread samples every tracked PID roughly once per
 is the data source for the ADR-0007 gate: whether captured CPU stays above the
 SLA on a relevant slice of the fleet after the zero-copy pipeline (ADR-0014),
 which would justify escalating the Rust capture port instead of tuning FFmpeg
-further.
+further. It is also the data source for the Track R2 M0 bench harness
+(``project/tools/bench_recording.ps1``) via the ``TELEMETRY_CSV`` env var.
 
 Usage::
 
@@ -26,12 +27,18 @@ evicts it. Untracking is best-effort cleanup, not a correctness requirement.
 """
 from __future__ import annotations
 
+import csv
+import os
 import threading
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import psutil
 from loguru import logger
+
+_CSV_HEADER = ["ts", "category", "label", "pid", "cpu_pct", "rss_mb"]
 
 
 @dataclass
@@ -45,12 +52,20 @@ class _Tracked:
 class ProcTelemetry:
     """Background psutil sampler for a dynamic set of tracked PIDs."""
 
-    def __init__(self, interval_seconds: float = 10.0) -> None:
+    def __init__(
+        self, interval_seconds: float = 10.0, csv_path: Optional[str] = None
+    ) -> None:
         self._interval = max(1.0, interval_seconds)
         self._lock = threading.Lock()
         self._tracked: dict[int, _Tracked] = {}
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        # TELEMETRY_CSV: opt-in bench-harness sink (Track R2 M0). Diagnostic-only —
+        # a write failure must never affect sampling, so errors are swallowed.
+        self._csv_path = csv_path if csv_path is not None else os.getenv("TELEMETRY_CSV")
+        self._csv_header_written = False
+        if self._csv_path:
+            self._csv_header_written = Path(self._csv_path).exists()
 
     def set_interval(self, interval_seconds: float) -> None:
         self._interval = max(1.0, interval_seconds)
@@ -106,6 +121,8 @@ class ProcTelemetry:
         with self._lock:
             items = list(self._tracked.values())
         dead: list[int] = []
+        rows: list[list] = []
+        now = time.time()
         for t in items:
             try:
                 cpu_pct = t.proc.cpu_percent(None)
@@ -119,10 +136,25 @@ class ProcTelemetry:
                 "[telemetry] category={} label={} pid={} cpu_pct={:.1f} rss_mb={:.1f}",
                 t.category, t.label, t.pid, cpu_pct, rss_mb,
             )
+            rows.append([now, t.category, t.label, t.pid, cpu_pct, rss_mb])
         if dead:
             with self._lock:
                 for pid in dead:
                     self._tracked.pop(pid, None)
+        if rows and self._csv_path:
+            self._append_csv(rows)
+
+    def _append_csv(self, rows: list[list]) -> None:
+        try:
+            write_header = not self._csv_header_written
+            with open(self._csv_path, "a", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                if write_header:
+                    writer.writerow(_CSV_HEADER)
+                    self._csv_header_written = True
+                writer.writerows(rows)
+        except OSError:
+            logger.debug("[telemetry] TELEMETRY_CSV write failed — dropping this batch.")
 
 
 _telemetry: Optional[ProcTelemetry] = None

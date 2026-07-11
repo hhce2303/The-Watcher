@@ -14,10 +14,16 @@ from loguru import logger
 
 from app.adapters.ffmpeg.encoder_selector import get_encoder, quality_flags
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
-from app.adapters.ffmpeg.process_guard import assign_to_job
+from app.adapters.ffmpeg.process_guard import assign_to_job, resume_suspended_process
 from app.core.ports.recorder_port import RecorderPort
 from app.core.recording_service.models import MonitorInfo, Segment
 from app.infrastructure.proc_telemetry import track_process, untrack_process
+
+# CREATE_SUSPENDED (not exposed as a subprocess.* constant, unlike CREATE_NO_WINDOW) —
+# see ADR-0016: the child cannot run any code, hence cannot escape the Job assignment
+# race (monitor_worker.py:82-85 / supervisor.py:159-170), until process_guard's
+# resume_suspended_process() explicitly resumes it after assign_to_job() completes.
+_CREATE_SUSPENDED = 0x00000004
 
 # Grace period added on top of segment_duration for stall detection.
 # The watchdog fires on_crash if no new segment appears within
@@ -135,13 +141,27 @@ class FFmpegRecorderAdapter(RecorderPort):
         cmd = self._build_ffmpeg_command(output_dir)
         self._log.info("Starting FFmpeg: {}", " ".join(cmd))
 
+        # Spawned suspended so it cannot run any code (or be affected by the
+        # historical Popen-then-assign orphan race) until it has already been
+        # assigned to the Job — see ADR-0016 and _CREATE_SUSPENDED above.
         self._process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=subprocess.CREATE_NO_WINDOW | _CREATE_SUSPENDED,
         )
         assign_to_job(self._process)
+        try:
+            resume_suspended_process(self._process.pid)
+        except Exception:
+            # A suspended process that never resumes is a silent recording
+            # outage — worse than a loud failure the existing crash/backoff
+            # machinery already knows how to retry (RecorderSupervisor).
+            self._log.exception("Failed to resume suspended FFmpeg process — killing it.")
+            self._process.kill()
+            self._process.wait(timeout=5)
+            self._process = None
+            raise
         track_process(self._process.pid, category="recorder", label=self._mon_tag)
         self._last_segment_time = time.monotonic()
 

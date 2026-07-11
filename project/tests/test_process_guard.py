@@ -1,7 +1,9 @@
 """
 Tests for process_guard's batch governance (PoC-2 —
 ffmpeg-pipeline-optimization-research.md §4/§8): the MAX_BATCH_FFMPEG
-concurrency semaphore and the shared batch Job Object config.
+concurrency semaphore and the shared batch Job Object config; plus (ADR-0016)
+resume_suspended_process, the orphan-race fix promoted from the Track R2 M2a
+ctypes spike.
 """
 from __future__ import annotations
 
@@ -13,6 +15,9 @@ import time
 import pytest
 
 from app.adapters.ffmpeg import process_guard as pg
+
+# CREATE_SUSPENDED isn't exposed as a subprocess.* constant (see recorder_adapter.py).
+_CREATE_SUSPENDED = 0x00000004
 
 
 @pytest.fixture(autouse=True)
@@ -198,3 +203,60 @@ class TestRunBatchedFfmpeg:
                 on_finished=lambda: finished.append(True),
             )
         assert finished == [True]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="CREATE_SUSPENDED/ResumeThread are Windows-only")
+class TestResumeSuspendedProcess:
+    """ADR-0016: the orphan-race fix promoted from the M2a ctypes spike —
+    CreateProcessW(CREATE_SUSPENDED) -> assign_to_job() -> resume_suspended_process()
+    closes the gap subprocess.Popen()-then-assign_to_job() left open."""
+
+    def test_process_does_not_run_until_resumed(self, tmp_path):
+        marker = tmp_path / "ran.txt"
+        proc = subprocess.Popen(
+            [sys.executable, "-c", f"open(r'{marker}', 'w').write('ran')"],
+            creationflags=subprocess.CREATE_NO_WINDOW | _CREATE_SUSPENDED,
+        )
+        try:
+            time.sleep(0.3)
+            assert proc.poll() is None, "suspended process must still be alive (not yet run)"
+            assert not marker.exists(), "suspended process must not have executed any code yet"
+
+            pg.resume_suspended_process(proc.pid)
+            proc.wait(timeout=5)
+
+            assert proc.returncode == 0
+            assert marker.exists()
+            assert marker.read_text() == "ran"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    def test_raises_for_a_pid_with_no_matching_thread(self):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "pass"],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        proc.wait(timeout=5)  # already exited — no thread to find
+        with pytest.raises(Exception):
+            pg.resume_suspended_process(proc.pid)
+
+    def test_assign_to_job_then_resume_survives_a_kill_race(self, tmp_path):
+        """Mirrors the M2a spike's race test at the process_guard level: assign
+        while suspended, resume, then confirm the child was reachable as a Job
+        member throughout (no window where it ran unassigned)."""
+        marker = tmp_path / "ran.txt"
+        proc = subprocess.Popen(
+            [sys.executable, "-c", f"open(r'{marker}', 'w').write('ran')"],
+            creationflags=subprocess.CREATE_NO_WINDOW | _CREATE_SUSPENDED,
+        )
+        try:
+            pg.assign_to_job(proc)  # must not raise on a suspended process
+            pg.resume_suspended_process(proc.pid)
+            proc.wait(timeout=5)
+            assert marker.exists()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)

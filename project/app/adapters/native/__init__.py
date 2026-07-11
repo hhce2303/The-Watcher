@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from app.adapters.native.rust_segment_compiler import (
     RustSegmentCompilerAdapter,
+    make_clip_adapter,
     make_segment_compiler,
     rust_engine_status,
 )
 
 __all__ = [
     "RustSegmentCompilerAdapter",
+    "make_clip_adapter",
     "make_segment_compiler",
     "rust_engine_status",
 ]

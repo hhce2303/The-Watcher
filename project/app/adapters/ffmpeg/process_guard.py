@@ -36,6 +36,7 @@ import ctypes.wintypes
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from typing import Optional
 
@@ -145,6 +146,9 @@ if sys.platform != "win32":
         memory_limit_mb: int = 0,
         cpu_hard_cap_percent: int = 0,
     ) -> None:
+        pass
+
+    def resume_suspended_process(pid: int) -> None:  # type: ignore[unused-argument]
         pass
 
 else:
@@ -367,3 +371,81 @@ else:
 
     # Module-level list keeps per-recorder job handles open for the process lifetime.
     _open_jobs: list[int] = []
+
+    # ── Suspended-spawn resume (ADR-0016 — orphan-race fix, no Rust crate) ───
+    # recorder_adapter.py spawns FFmpeg with creationflags=CREATE_SUSPENDED so the
+    # child cannot run any code (including being affected by the historical
+    # Popen-then-assign race, monitor_worker.py:82-85 / supervisor.py:159-170)
+    # until AFTER assign_to_job() has already added it to the Job. This function
+    # resumes it. subprocess.Popen never exposes the new thread's handle (the
+    # limitation Track R2's M2 originally assigned to a Rust crate — see
+    # ADR-0016), so the thread is instead located by PID via a Toolhelp32
+    # snapshot: a CREATE_SUSPENDED process has exactly one thread, so the first
+    # match IS the main thread, unambiguously.
+    _TH32CS_SNAPTHREAD = 0x00000004
+    _THREAD_SUSPEND_RESUME = 0x0002
+    _INVALID_HANDLE_VALUE = ctypes.wintypes.HANDLE(-1).value
+
+    _kernel32.CreateToolhelp32Snapshot.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.DWORD]
+    _kernel32.CreateToolhelp32Snapshot.restype = ctypes.wintypes.HANDLE
+    _kernel32.OpenThread.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+    _kernel32.OpenThread.restype = ctypes.wintypes.HANDLE
+    _kernel32.ResumeThread.argtypes = [ctypes.wintypes.HANDLE]
+    _kernel32.ResumeThread.restype = ctypes.wintypes.DWORD
+
+    class _THREADENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.wintypes.DWORD),
+            ("cntUsage", ctypes.wintypes.DWORD),
+            ("th32ThreadID", ctypes.wintypes.DWORD),
+            ("th32OwnerProcessID", ctypes.wintypes.DWORD),
+            ("tpBasePri", ctypes.c_long),
+            ("tpDeltaPri", ctypes.c_long),
+            ("dwFlags", ctypes.wintypes.DWORD),
+        ]
+
+    _kernel32.Thread32First.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(_THREADENTRY32)]
+    _kernel32.Thread32First.restype = ctypes.wintypes.BOOL
+    _kernel32.Thread32Next.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(_THREADENTRY32)]
+    _kernel32.Thread32Next.restype = ctypes.wintypes.BOOL
+
+    def _find_main_thread_id(pid: int, retries: int = 5, retry_delay_s: float = 0.02) -> int:
+        """Locate the (only) thread ID of a CREATE_SUSPENDED process by PID.
+
+        A brand-new suspended process's thread can lag microscopically behind
+        CreateProcess returning in rare cases — retried defensively rather than
+        failing on the first empty snapshot.
+        """
+        for attempt in range(retries):
+            snap = _kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+            if snap == _INVALID_HANDLE_VALUE or not snap:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                entry = _THREADENTRY32()
+                entry.dwSize = ctypes.sizeof(_THREADENTRY32)
+                found = _kernel32.Thread32First(snap, ctypes.byref(entry))
+                while found:
+                    if entry.th32OwnerProcessID == pid:
+                        return entry.th32ThreadID
+                    found = _kernel32.Thread32Next(snap, ctypes.byref(entry))
+            finally:
+                _kernel32.CloseHandle(snap)
+            if attempt < retries - 1:
+                time.sleep(retry_delay_s)
+        raise RuntimeError(f"No thread found for suspended PID {pid} after {retries} attempts.")
+
+    def resume_suspended_process(pid: int) -> None:
+        """Resume a process created with CREATE_SUSPENDED. Raises on failure —
+        callers MUST NOT swallow this: a suspended process that never resumes
+        is a silent recording outage, worse than a loud startup failure that
+        the existing crash/backoff machinery already knows how to retry.
+        """
+        tid = _find_main_thread_id(pid)
+        h_thread = _kernel32.OpenThread(_THREAD_SUSPEND_RESUME, False, tid)
+        if not h_thread:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if _kernel32.ResumeThread(h_thread) == 0xFFFFFFFF:
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            _kernel32.CloseHandle(h_thread)

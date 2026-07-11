@@ -149,6 +149,16 @@ class ClipBuilder:
         is finalized vs still in-progress is logged for audit but not required:
         waiting for finalization would add up to one full segment-duration of
         latency to every clip for no benefit, since the frames are on disk.
+
+        Track R2 M5: waits on BufferManager.wait_for_segment_between (a
+        threading.Condition notified from register_segment) instead of
+        sleeping a fixed 0.5s every iteration — segment events arrive in ~ms,
+        so this removes up to ~1.5s of dead latency per event clip. Each
+        iteration still re-scans every monitor (a wait on one monitor's
+        Condition doesn't know about another monitor's footage arriving), so
+        behavior for the pending set is unchanged — only the wait granularity
+        improves from "always the full 0.5s" to "returns as soon as any
+        segment lands, capped at 1s so the other monitors get re-checked too."
         """
         if self._post_window_timeout <= 0:
             return
@@ -156,12 +166,14 @@ class ClipBuilder:
         deadline = time.monotonic() + self._post_window_timeout
         while time.monotonic() < deadline:
             pending = []
+            pending_workers = []
             for m in monitors:
                 worker = self._service.get_worker(m.index)
                 if worker is None:
                     continue
                 if not worker.buffer.get_segments_between(probe_start, clip_end):
                     pending.append(m.display_name)
+                    pending_workers.append(worker)
             if not pending:
                 finalized = all(
                     (w := self._service.get_worker(m.index)) is None
@@ -173,7 +185,12 @@ class ClipBuilder:
                 )
                 return
             log.debug("Awaiting post-event footage for: {}", pending)
-            time.sleep(0.5)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            pending_workers[0].buffer.wait_for_segment_between(
+                probe_start, clip_end, min(remaining, 1.0)
+            )
         log.warning(
             "Post-event footage incomplete after {}s — building with what is "
             "available.",

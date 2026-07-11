@@ -74,6 +74,13 @@ class Settings:
     # downloading every frame before scaling — ~66% less CPU/monitor on QSV.
     # See project/docs/migration/ffmpeg-pipeline-optimization-research.md §3.1.
     capture_pipeline: str = os.getenv("CAPTURE_PIPELINE", "auto")
+    # CLIP_ENGINE (Track R2 M1) — "auto"/"rust": route the single-monitor clip
+    # path (FFmpegTrimAdapter._build_single, byte-identical to compile_clip)
+    # through the Rust watcher_segments engine when it's the active
+    # segment_compiler (ENGINE_READY-gated); "ffmpeg" forces the legacy FFmpeg
+    # concat/-c copy path. Any Rust exception falls back to FFmpeg in the same
+    # call regardless of this setting — this only controls the first attempt.
+    clip_engine: str = os.getenv("CLIP_ENGINE", "auto").lower()
     capture_framerate: int = int(os.getenv("CAPTURE_FRAMERATE", "30"))
     output_width: int = int(os.getenv("OUTPUT_WIDTH", "1920"))
     output_height: int = int(os.getenv("OUTPUT_HEIGHT", "1080"))

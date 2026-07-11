@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime
 from typing import Callable, List, Optional
 
@@ -41,6 +43,9 @@ class BufferManager:
         self._segment_floor: Optional[datetime] = None
         # Phase-tagged logger (F3 SEGMENT).
         self._log = logger.bind(phase="SEGMENT")
+        # Track R2 M5: notified on every register_segment() so ClipBuilder can
+        # wait for post-event footage instead of sleep-polling every 0.5s.
+        self._new_segment_cond = threading.Condition()
 
     # ------------------------------------------------------------------
     # Ingestion
@@ -71,6 +76,8 @@ class BufferManager:
             if self._on_segment_finalized is not None:
                 self._on_segment_finalized(segment)
         self._enforce_retention()
+        with self._new_segment_cond:
+            self._new_segment_cond.notify_all()
 
     # ------------------------------------------------------------------
     # Monitor config change — dimension floor
@@ -114,6 +121,29 @@ class BufferManager:
                     floor.isoformat(),
                 )
         return segments
+
+    def wait_for_segment_between(self, start: datetime, end: datetime, timeout: float) -> bool:
+        """Block until a segment overlapping [start, end] appears, or ``timeout``
+        elapses. Returns True if found, False on timeout.
+
+        Track R2 M5 — replaces ClipBuilder's old 0.5s sleep-poll. The predicate
+        (segment presence, via ``get_segments_between``) is checked BEFORE every
+        wait, under the same lock ``register_segment`` notifies under — so a
+        registration that completes before this is even called is not a "lost
+        wakeup" (the very first check already sees it via the index, without
+        needing to catch an in-flight notify), and a spurious wakeup (or a
+        notify for a segment that doesn't overlap this window) just loops back
+        to waiting rather than returning early.
+        """
+        deadline = time.monotonic() + timeout
+        with self._new_segment_cond:
+            while True:
+                if self.get_segments_between(start, end):
+                    return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._new_segment_cond.wait(remaining)
 
     def has_finalized_through(self, end: datetime) -> bool:
         """True if a *finalized* segment covers up to ``end``.

@@ -1176,15 +1176,22 @@ fn compile_clip_impl(
 
 /// Compile/concatenate `sources` into `output`, losslessly, with an optional
 /// `[in_point_s, out_point_s]` window. Mirrors `SegmentCompilerPort.compile`.
+///
+/// Track R2 M1: the remux runs under `py.allow_threads` so it does not hold
+/// the GIL for its duration — before this, a multi-segment remux froze every
+/// other Python thread (including the editor's export flow and the IPC
+/// server) for as long as the mux took. `compile_clip_impl` takes no PyO3
+/// types, so it's safe to call with the GIL released.
 #[pyfunction]
 #[pyo3(signature = (sources, output, in_point_s=None, out_point_s=None))]
 fn compile_clip(
+    py: Python<'_>,
     sources: Vec<String>,
     output: String,
     in_point_s: Option<f64>,
     out_point_s: Option<f64>,
 ) -> PyResult<String> {
-    compile_clip_impl(&sources, &output, in_point_s, out_point_s)
+    py.allow_threads(|| compile_clip_impl(&sources, &output, in_point_s, out_point_s))
         .map_err(PyRuntimeError::new_err)
 }
 
