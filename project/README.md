@@ -41,6 +41,11 @@ The recording service is a self-contained inner hexagon. The UI is a pure adapte
 
 Role is configured via `USER_ROLE` in `.env`. The `supervisor` role skips the entire recording stack at startup.
 
+The Operator restart watchdog (Scheduled Task, `app/infrastructure/scheduled_task.py`) can't be
+unit-tested — see
+[`docs/operator-policy-manual-checklist.md`](docs/operator-policy-manual-checklist.md) for the
+manual verification pass to run on a real Windows operator station before deploying.
+
 ### Request flow (IT ↔ Supervisor)
 
 ```
@@ -79,7 +84,7 @@ project/
 │   │
 │   ├── adapters/
 │   │   ├── ffmpeg/
-│   │   │   ├── recorder_adapter.py      ← gdigrab capture + embedded 2fps preview
+│   │   │   ├── recorder_adapter.py      ← ddagrab (DXGI) capture, gdigrab fallback (ADR-0013) + embedded 2fps preview
 │   │   │   ├── trim_adapter.py          ← event clip trimming
 │   │   │   ├── encoder_selector.py      ← NVENC / QuickSync / AMF / CPU auto-detect
 │   │   │   ├── combined_clip_builder.py ← multi-monitor grid + timestamp overlay
@@ -176,7 +181,7 @@ workers) and published on the event bus as `monitors_changed`, consumed by React
 ```
 MonitorDetectionService
   → one MonitorWorker per physical screen
-       → FFmpegRecorderAdapter  (gdigrab → MPEG-TS segments + preview.jpg)
+       → FFmpegRecorderAdapter  (ddagrab/DXGI, gdigrab fallback → MPEG-TS segments + preview.jpg)
        → BufferManager           (rolling retention, prunes old segments)
        → HourlyRecordingBuilder  (assembles rolling hourly raw clips)
 
