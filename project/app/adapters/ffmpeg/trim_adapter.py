@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +15,7 @@ from app.adapters.ffmpeg.encoder_selector import (
     tag_for_encoder,
 )
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
+from app.adapters.ffmpeg.process_guard import run_batched_ffmpeg
 from app.core.ports.clip_port import ClipPort
 from app.core.recording_service.models import MonitorInfo, Segment
 
@@ -312,13 +312,7 @@ class FFmpegTrimAdapter(ClipPort):
 
     def _run(self, cmd: List[str], output_path: Path) -> None:
         logger.info("FFmpeg clip: {} → {}", cmd[-2] if len(cmd) > 1 else "?", output_path.name)
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=900,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        result = run_batched_ffmpeg(cmd, label="clip-build", timeout=900)
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace")
             logger.error(

@@ -72,6 +72,15 @@ class RecordingHealthService:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def set_callbacks(
+        self,
+        on_degraded: Optional[Callable[[dict], None]] = None,
+        on_recovered: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Wire the facade callbacks post-construction (main.py owns ``api``)."""
+        self._on_degraded = on_degraded
+        self._on_recovered = on_recovered
+
     # ── Main loop ─────────────────────────────────────────────────────
 
     def _loop(self) -> None:

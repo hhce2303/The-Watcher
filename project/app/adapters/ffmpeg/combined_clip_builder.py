@@ -18,8 +18,7 @@ from app.adapters.ffmpeg.encoder_selector import (
     tag_for_encoder,
 )
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
-from app.adapters.ffmpeg.process_guard import assign_to_batch_job, batch_slot
-from app.infrastructure.proc_telemetry import track_process, untrack_process
+from app.adapters.ffmpeg.process_guard import run_batched_ffmpeg
 
 
 def _grid2_filter(n: int, cell: str = "1280x720") -> tuple[str, str]:
@@ -398,34 +397,25 @@ class CombinedClipBuilder:
 
             cmd += ["-movflags", "+faststart", "-y", str(tmp)]
 
-            with batch_slot():
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-                assign_to_batch_job(proc)
-                track_process(proc.pid, category="batch", label="combined")
+            def _on_started(proc: subprocess.Popen) -> None:
                 with self._proc_lock:
                     self._active_proc = proc
-                try:
-                    _, stderr_bytes = proc.communicate(timeout=3600)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.communicate()
-                    raise
-                finally:
-                    untrack_process(proc.pid)
-                    with self._proc_lock:
-                        self._active_proc = None
 
-            if proc.returncode != 0:
+            def _on_finished() -> None:
+                with self._proc_lock:
+                    self._active_proc = None
+
+            result = run_batched_ffmpeg(
+                cmd, label="combined", timeout=3600,
+                on_started=_on_started, on_finished=_on_finished,
+            )
+
+            if result.returncode != 0:
                 tmp.unlink(missing_ok=True)
-                err = (stderr_bytes or b"").decode("utf-8", errors="replace")[-2000:]
+                err = (result.stderr or b"").decode("utf-8", errors="replace")[-2000:]
                 logger.error(
                     "[combined] ✗ {} (rc={}):\n{}",
-                    output.name, proc.returncode, err,
+                    output.name, result.returncode, err,
                 )
                 with self._lock:
                     self._submitted.discard(window_key)   # allow retry on next on_clip_ready

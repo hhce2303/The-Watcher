@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import threading
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -14,9 +15,8 @@ from collections.abc import Callable
 
 from app.adapters.ffmpeg.encoder_selector import codec_tag, effective_codec
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
-from app.adapters.ffmpeg.process_guard import assign_to_batch_job, batch_slot
+from app.adapters.ffmpeg.process_guard import run_batched_ffmpeg
 from app.core.recording_service.models import Segment
-from app.infrastructure.proc_telemetry import track_process, untrack_process
 
 
 def _floor_to_window(dt: datetime, window_minutes: int) -> datetime:
@@ -225,8 +225,38 @@ class RecordingClipBuilder:
         except RuntimeError:
             logger.debug("[clip m{}] Executor shut down; skipping build.", self._monitor_idx)
 
-    def _purge_stale_temps(self) -> None:
-        for stale in self._output_dir.glob("*.tmp.mp4"):
+    def _purge_stale_temps(
+        self, *, max_age_seconds: float | None = None, exclude: Path | None = None
+    ) -> None:
+        """Remove leftover ``*.tmp.mp4`` files belonging to THIS monitor.
+
+        ``_output_dir`` is shared across every monitor's builder (see
+        ``build_recording_backend`` in ``runtime/backend.py``), and a new
+        builder is constructed live on hot-plug (``_hot_add`` in ``main.py``)
+        — not only at cold startup. An unscoped glob here would delete
+        another monitor's in-flight ``.tmp.mp4`` the moment a second monitor
+        is plugged in mid-recording, so the glob is scoped to this monitor's
+        own filename suffix (``_window_output`` always appends ``_m{idx}``).
+
+        With ``max_age_seconds=None`` (startup/hot-plug path) every matching
+        tmp is removed unconditionally — safe because no build for THIS
+        monitor is running yet at construction time. Called with a threshold
+        from ``_build()`` it only sweeps tmps older than that (and skips
+        ``exclude``, the current build's own tmp), so a tmp orphaned by a
+        mid-write crash gets cleaned on the next segment cycle instead of
+        surviving until the next full app restart.
+        """
+        now = time.time()
+        for stale in self._output_dir.glob(f"*_m{self._monitor_idx}.tmp.mp4"):
+            if exclude is not None and stale == exclude:
+                continue
+            if max_age_seconds is not None:
+                try:
+                    age = now - stale.stat().st_mtime
+                except OSError:
+                    continue
+                if age < max_age_seconds:
+                    continue
             try:
                 stale.unlink()
                 logger.info("[clip m{}] Removed stale temp: {}", self._monitor_idx, stale.name)
@@ -251,6 +281,13 @@ class RecordingClipBuilder:
         output.parent.mkdir(parents=True, exist_ok=True)
         tmp = output.with_suffix(".tmp.mp4")
         concat_file: Path | None = None
+
+        # Opportunistic sweep: a tmp orphaned by a mid-write crash (whole-app
+        # kill, not just ffmpeg) would otherwise survive until the next full
+        # restart's __init__ purge. 2h safely exceeds the 3600s build timeout
+        # below, and the single-worker executor guarantees no other build is
+        # ever in flight to be mistaken for stale.
+        self._purge_stale_temps(max_age_seconds=2 * 3600, exclude=tmp)
 
         try:
             with tempfile.NamedTemporaryFile(
@@ -282,29 +319,21 @@ class RecordingClipBuilder:
             )
 
             label = f"clip-m{self._monitor_idx}"
-            with batch_slot():
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-                assign_to_batch_job(proc)
-                track_process(proc.pid, category="batch", label=label)
+
+            def _on_started(proc: subprocess.Popen) -> None:
                 with self._proc_lock:
                     self._active_proc = proc
-                try:
-                    _, stderr_bytes = proc.communicate(timeout=3600)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.communicate()
-                    raise
-                finally:
-                    untrack_process(proc.pid)
-                    with self._proc_lock:
-                        self._active_proc = None
 
-            if proc.returncode == 0:
+            def _on_finished() -> None:
+                with self._proc_lock:
+                    self._active_proc = None
+
+            result = run_batched_ffmpeg(
+                cmd, label=label, timeout=3600,
+                on_started=_on_started, on_finished=_on_finished,
+            )
+
+            if result.returncode == 0:
                 tmp.replace(output)
                 size_mb = output.stat().st_size / 1_048_576
                 logger.info(
@@ -328,10 +357,10 @@ class RecordingClipBuilder:
                     )
             else:
                 tmp.unlink(missing_ok=True)
-                err = (stderr_bytes or b"").decode("utf-8", errors="replace")[-2000:]
+                err = (result.stderr or b"").decode("utf-8", errors="replace")[-2000:]
                 logger.error(
                     "[clip m{}] ✗ {} (rc={}):\n{}",
-                    self._monitor_idx, output.name, proc.returncode, err,
+                    self._monitor_idx, output.name, result.returncode, err,
                 )
 
         except subprocess.TimeoutExpired:

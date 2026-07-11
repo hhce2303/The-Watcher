@@ -19,6 +19,10 @@ Usage::
     proc = subprocess.Popen(cmd, ...)
     assign_to_job(proc)                 # recorder — never throttled
 
+    result = run_batched_ffmpeg(cmd, label="clip-m0")   # batch — preferred path
+
+    # Equivalent manual form, for callers that can't use run_batched_ffmpeg
+    # directly (e.g. batch_clip_analyzer.py, mp4_converter_adapter.py):
     with batch_slot():
         proc = subprocess.Popen(cmd, ...)
         assign_to_batch_job(proc)       # batch — shared weight/priority/mem cap
@@ -32,9 +36,12 @@ import ctypes.wintypes
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import Optional
 
 from loguru import logger
+
+from app.infrastructure.proc_telemetry import track_process, untrack_process
 
 # ── Batch concurrency semaphore (platform-independent) ─────────────────────
 # Bounds how many batch FFmpeg processes may run at once system-wide — flattens
@@ -78,6 +85,51 @@ def batch_slot() -> Iterator[None]:
         yield
     finally:
         sem.release()
+
+
+def run_batched_ffmpeg(
+    cmd: list[str],
+    *,
+    label: str,
+    timeout: float = 3600,
+    on_started: Optional[Callable[[subprocess.Popen], None]] = None,
+    on_finished: Optional[Callable[[], None]] = None,
+) -> subprocess.CompletedProcess:
+    """Run *cmd* inside the batch concurrency slot + job object.
+
+    Wraps the batch_slot()/assign_to_batch_job()/track_process() boilerplate
+    for offline FFmpeg spawns. Currently used by the clip builders
+    (hourly_recording_builder.py, combined_clip_builder.py) and the event-clip
+    adapters (timestamp_adapter.py, trim_adapter.py); batch_clip_analyzer.py
+    and mp4_converter_adapter.py still call the pieces directly and have not
+    been migrated. Blocks until the process exits.
+
+    ``on_started``/``on_finished`` let a caller track the live Popen for
+    cancellation (e.g. a builder's shutdown path) without duplicating the
+    batch_slot/job/telemetry wiring itself.
+    """
+    with batch_slot():
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assign_to_batch_job(proc)
+        track_process(proc.pid, category="batch", label=label)
+        try:
+            if on_started is not None:
+                on_started(proc)
+            _, stderr_bytes = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
+        finally:
+            untrack_process(proc.pid)
+            if on_finished is not None:
+                on_finished()
+    return subprocess.CompletedProcess(cmd, proc.returncode, None, stderr_bytes)
 
 
 if sys.platform != "win32":
