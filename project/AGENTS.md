@@ -88,8 +88,9 @@ src/                ← React UI: role-aware router, features/ per view, lib/ipc
 | Domain model (recording) | Pydantic `BaseModel`, frozen | `Segment`, `MonitorInfo`, `Event` |
 | Domain model (player) | stdlib `dataclass` / `Enum` | `ClipInfo`, `PlaybackState` |
 | Segment files | `seg_YYYYMMDD_HHMMSS.ts` | Format used by buffer manager |
-| Clip files | `YYYY-MM-DD_HH-MM-SS_event.mp4` | |
+| Clip files | `YYYY-MM-DD_HH-MM-SS.mp4` (combined), `_m{idx}.mp4` (raw), `_event.mp4` (event) | Timestamp is the real wall-clock recording start, not a rounded window boundary |
 | Per-monitor segment dirs | `segments/m{index}/` | |
+| Clip output dirs | `clips/` (combined), `clips_raw/` (per-monitor), `clips_events/` (auto/manual events) | Event clips no longer share `clips/` with combined recordings |
 
 ---
 

@@ -5,7 +5,6 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,25 +12,15 @@ from loguru import logger
 
 from collections.abc import Callable
 
+from app.adapters.ffmpeg.builder_process_mixin import FfmpegBuilderExecutorMixin
+from app.adapters.ffmpeg.clip_window import floor_to_window
 from app.adapters.ffmpeg.encoder_selector import codec_tag, effective_codec
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
 from app.adapters.ffmpeg.process_guard import run_batched_ffmpeg
 from app.core.recording_service.models import Segment
 
 
-def _floor_to_window(dt: datetime, window_minutes: int) -> datetime:
-    """Round ``dt`` down to the nearest ``window_minutes`` boundary."""
-    total_minutes = dt.hour * 60 + dt.minute
-    floor_minutes = (total_minutes // window_minutes) * window_minutes
-    return dt.replace(
-        hour=floor_minutes // 60,
-        minute=floor_minutes % 60,
-        second=0,
-        microsecond=0,
-    )
-
-
-class RecordingClipBuilder:
+class RecordingClipBuilder(FfmpegBuilderExecutorMixin):
     """
     Assembles one monitor's MPEG-TS segments into rolling MP4 clips.
 
@@ -63,7 +52,7 @@ class RecordingClipBuilder:
         monitor_index: int,
         window_minutes: int = 60,
         max_size_mb: int = 3072,
-        on_clip_ready: "Callable[[Path], None] | None" = None,
+        on_clip_ready: "Callable[[Path, str, datetime], None] | None" = None,
         codec: str = "h264",
     ) -> None:
         self._output_dir    = output_dir
@@ -76,13 +65,14 @@ class RecordingClipBuilder:
         self._lock        = threading.Lock()
         self._windows: dict[datetime, list[Segment]]  = defaultdict(list)
         self._win_sizes: dict[datetime, int]           = defaultdict(int)
+        # Real wall-clock start of each window's earliest segment — first-seen-wins,
+        # used for the output FILENAME. `ws` (the floor boundary) stays the internal
+        # bucket/grouping key so multi-monitor combining is unaffected.
+        self._win_real_start: dict[datetime, datetime] = {}
 
-        self._proc_lock: threading.Lock = threading.Lock()
-        self._active_proc: "subprocess.Popen | None" = None  # tracked for fast shutdown
-
-        self._executor = ThreadPoolExecutor(
-            max_workers=1,
+        self._init_ffmpeg_executor(
             thread_name_prefix=f"clip-m{monitor_index}",
+            log_label=f"[clip m{monitor_index}]",
         )
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -100,7 +90,7 @@ class RecordingClipBuilder:
         seg_size = segment.size_bytes
 
         with self._lock:
-            ws = _floor_to_window(segment.started_at, self._window_mins)
+            ws = floor_to_window(segment.started_at, self._window_mins)
 
             # Size-overflow: flush window early when adding this segment would
             # exceed the limit, then open a new window for the segment.
@@ -117,6 +107,11 @@ class RecordingClipBuilder:
                 self._flush_window_locked(ws)
                 ws = ws + timedelta(minutes=self._window_mins)
 
+            # First-seen-wins: must run AFTER the overflow reassignment above so a
+            # freshly-opened post-overflow bucket seeds from the segment that
+            # actually opened it, not the old bucket's real start.
+            self._win_real_start.setdefault(ws, segment.started_at)
+
             if segment.path not in {s.path for s in self._windows[ws]}:
                 self._windows[ws].append(segment)
                 self._windows[ws].sort(key=lambda s: s.started_at)
@@ -124,8 +119,10 @@ class RecordingClipBuilder:
 
             segs_snap = list(self._windows[ws])
             size_snap = self._win_sizes[ws]
+            real_start = self._win_real_start[ws]
 
-        output = self._window_output(ws)
+        window_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
+        output = self._window_output(real_start)
         logger.debug(
             "[clip m{}] Window {} — {} seg(s), {:.1f} MB raw → queuing build for {}",
             self._monitor_idx,
@@ -134,7 +131,7 @@ class RecordingClipBuilder:
             size_snap / 1_048_576,
             output.name,
         )
-        self._submit_build(segs_snap, output, size_snap)
+        self._submit_build(segs_snap, output, size_snap, window_key, real_start)
 
     def recover_from_segments(self, all_segments: list[Segment]) -> None:
         """Startup recovery: group by window, ONE build per window.
@@ -145,13 +142,17 @@ class RecordingClipBuilder:
         """
         by_window: dict[datetime, list[Segment]] = defaultdict(list)
         for seg in all_segments:
-            ws = _floor_to_window(seg.started_at, self._window_mins)
+            ws = floor_to_window(seg.started_at, self._window_mins)
             by_window[ws].append(seg)
 
         queued = 0
         for ws in sorted(by_window):
             segs = sorted(by_window[ws], key=lambda s: s.started_at)
-            output = self._window_output(ws)
+            with self._lock:
+                self._win_real_start.setdefault(ws, segs[0].started_at)
+                real_start = self._win_real_start[ws]
+            window_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
+            output = self._window_output(real_start)
 
             if output.exists():
                 logger.debug(
@@ -176,7 +177,7 @@ class RecordingClipBuilder:
                 "[clip m{}] Recovery: queuing {} — {} segment(s), {:.1f} MB raw",
                 self._monitor_idx, output.name, len(segs), total_size / 1_048_576,
             )
-            self._submit_build(segs, output, total_size)
+            self._submit_build(segs, output, total_size, window_key, real_start)
             queued += 1
 
         if queued:
@@ -190,21 +191,10 @@ class RecordingClipBuilder:
                 self._monitor_idx,
             )
 
-    def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        with self._proc_lock:
-            if self._active_proc is not None:
-                try:
-                    self._active_proc.kill()
-                except OSError:
-                    pass
-                self._active_proc = None
-        logger.info("[clip m{}] Executor shut down.", self._monitor_idx)
-
     # ── Private helpers ───────────────────────────────────────────────
 
-    def _window_output(self, ws: datetime) -> Path:
-        ts = ws.strftime("%Y-%m-%d_%H-%M-%S")
+    def _window_output(self, real_start: datetime) -> Path:
+        ts = real_start.strftime("%Y-%m-%d_%H-%M-%S")
         return self._output_dir / f"{ts}_m{self._monitor_idx}.mp4"
 
     def _flush_window_locked(self, ws: datetime) -> None:
@@ -212,16 +202,26 @@ class RecordingClipBuilder:
         segs = list(self._windows[ws])
         size = self._win_sizes[ws]
         if segs:
-            output = self._window_output(ws)
-            self._submit_build(segs, output, size)
+            real_start = self._win_real_start.get(ws, segs[0].started_at)
+            window_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
+            output = self._window_output(real_start)
+            self._submit_build(segs, output, size, window_key, real_start)
         self._windows.pop(ws, None)
         self._win_sizes.pop(ws, None)
+        self._win_real_start.pop(ws, None)
 
     def _submit_build(
-        self, segments: list[Segment], output: Path, raw_size: int
+        self,
+        segments: list[Segment],
+        output: Path,
+        raw_size: int,
+        window_key: str,
+        real_start: datetime,
     ) -> None:
         try:
-            self._executor.submit(self._build, list(segments), output, raw_size)
+            self._executor.submit(
+                self._build, list(segments), output, raw_size, window_key, real_start
+            )
         except RuntimeError:
             logger.debug("[clip m{}] Executor shut down; skipping build.", self._monitor_idx)
 
@@ -268,6 +268,8 @@ class RecordingClipBuilder:
         segments: list[Segment],
         output: Path,
         raw_size_bytes: int,
+        window_key: str,
+        real_start: datetime,
     ) -> None:
         """Concat segments → MP4.  Runs in single-worker executor (never concurrent)."""
         available = [s for s in segments if s.path.exists()]
@@ -320,17 +322,10 @@ class RecordingClipBuilder:
 
             label = f"clip-m{self._monitor_idx}"
 
-            def _on_started(proc: subprocess.Popen) -> None:
-                with self._proc_lock:
-                    self._active_proc = proc
-
-            def _on_finished() -> None:
-                with self._proc_lock:
-                    self._active_proc = None
-
+            on_started, on_finished = self._process_tracking_callbacks()
             result = run_batched_ffmpeg(
                 cmd, label=label, timeout=3600,
-                on_started=_on_started, on_finished=_on_finished,
+                on_started=on_started, on_finished=on_finished,
             )
 
             if result.returncode == 0:
@@ -343,7 +338,7 @@ class RecordingClipBuilder:
                 # Notify CombinedClipBuilder (or any listener) that this clip is ready.
                 if self._on_clip_ready is not None:
                     try:
-                        self._on_clip_ready(output)
+                        self._on_clip_ready(output, window_key, real_start)
                     except Exception:
                         logger.exception("[clip m{}] on_clip_ready callback raised.", self._monitor_idx)
                 if output.stat().st_size > self._max_bytes:
@@ -386,7 +381,7 @@ class HourlyRecordingBuilder(RecordingClipBuilder):
         monitor_index: int | None = None,
         window_minutes: int = 60,
         max_size_mb: int = 3072,
-        on_clip_ready: "Callable[[Path], None] | None" = None,
+        on_clip_ready: "Callable[[Path, str, datetime], None] | None" = None,
         codec: str = "h264",
     ) -> None:
         super().__init__(

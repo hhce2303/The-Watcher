@@ -1,15 +1,16 @@
 ﻿from __future__ import annotations
 
 import subprocess
-import tempfile
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
 
+from app.adapters.ffmpeg.builder_process_mixin import FfmpegBuilderExecutorMixin
+from app.adapters.ffmpeg.clip_window import floor_to_window, parse_clip_start
 from app.adapters.ffmpeg.encoder_selector import (
     codec_tag,
     effective_codec,
@@ -71,7 +72,7 @@ def _grid2_filter(n: int, cell: str = "1280x720") -> tuple[str, str]:
     return ";".join(parts), "v"
 
 
-class CombinedClipBuilder:
+class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
     """
     Listens for per-monitor clips and produces ONE combined multi-monitor MP4.
 
@@ -105,6 +106,7 @@ class CombinedClipBuilder:
         cell_width: int = 1280,
         cell_height: int = 720,
         quality: int = 27,
+        window_minutes: int = 60,
     ) -> None:
         """
         Parameters
@@ -119,6 +121,11 @@ class CombinedClipBuilder:
         timestamp_adapter:
             Optional ``FFmpegTimestampAdapter`` — burns a wall-clock overlay
             into the combined clip after merging.
+        window_minutes:
+            Must match the per-monitor ``RecordingClipBuilder``'s
+            ``window_minutes`` — used by ``recover()`` to re-derive the shared
+            window bucket from a raw clip's real start time (there is no live
+            callback available during startup recovery).
         """
         self._raw_dir    = raw_dir
         self._output_dir = output_dir
@@ -127,18 +134,21 @@ class CombinedClipBuilder:
         self._codec      = codec
         self._cell       = f"{cell_width}x{cell_height}"
         self._quality    = quality
+        self._window_minutes = window_minutes
 
         self._lock      = threading.Lock()
         self._submitted: set[str] = set()       # window keys already queued/built
         self._seen_windows: set[str] = set()    # every window key a clip has arrived for
+        # window_key -> per-monitor raw clip paths reporting into that window.
+        # Populated directly from on_clip_ready/recover() callback data — NOT by
+        # globbing/re-parsing filenames, since per-monitor filenames now embed
+        # each monitor's own real start time and no longer share a common prefix.
+        self._window_clips: dict[str, set[Path]] = defaultdict(set)
+        # window_key -> earliest real start among monitors reporting into it —
+        # used as the combined clip's own filename/overlay timestamp.
+        self._window_real_start: dict[str, datetime] = {}
 
-        self._proc_lock: threading.Lock = threading.Lock()
-        self._active_proc: Optional[subprocess.Popen] = None  # tracked for fast shutdown
-
-        self._executor  = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="combined-clip",
-        )
+        self._init_ffmpeg_executor(thread_name_prefix="combined-clip", log_label="[combined]")
 
         output_dir.mkdir(parents=True, exist_ok=True)
         self._purge_stale_temps()
@@ -150,27 +160,31 @@ class CombinedClipBuilder:
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def _local_output(self, window_key: str) -> Path:
+    def _local_output(self, real_start: datetime) -> Path:
         """Combined clip path with LOCAL time in the filename.
 
-        Per-monitor raw clips use UTC-based window keys (because segment
-        timestamps are UTC).  The combined clip shown to users should use
-        local time so the filename matches what they see on the system clock.
+        ``real_start`` is the earliest real per-monitor segment start time for
+        this window (UTC) — the combined clip shown to users should use local
+        time so the filename matches what they see on the system clock.
 
         Example (UTC-5 machine):
-            window_key  '2026-05-30_05-00-00'   ← 05:00 UTC = midnight local
-            output      clips/2026-05-30_00-00-00.mp4
+            real_start  2026-05-30 05:00:03 UTC
+            output      clips/2026-05-30_00-00-03.mp4
         """
-        utc_dt   = datetime.strptime(window_key, "%Y-%m-%d_%H-%M-%S").replace(tzinfo=timezone.utc)
-        local_dt = utc_dt.astimezone()           # system local timezone
+        local_dt = real_start.astimezone()       # system local timezone
         local_key = local_dt.strftime("%Y-%m-%d_%H-%M-%S")
         return self._output_dir / f"{local_key}.mp4"
 
-    def on_clip_ready(self, clip_path: Path) -> None:
+    def on_clip_ready(self, clip_path: Path, window_key: str, real_start: datetime) -> None:
         """Called by RecordingClipBuilder when a per-monitor clip is finalised.
 
         Runs in the individual builder's executor thread — must be thread-safe.
-        clip_path example: clips_raw/2026-05-31_10-00-00_m0.mp4
+        ``window_key`` is the shared floor-based bucket string (identical across
+        every monitor reporting into the same hour, e.g. "2026-05-31_10-00-00");
+        ``real_start`` is THIS monitor's own real segment start time (per-monitor
+        filenames now embed real start, not the floor, so they no longer share a
+        common string prefix — the combining logic below never re-derives
+        ``window_key``/paths from filenames, only from these callback args).
 
         A window is combined EXACTLY ONCE, and only after it is COMPLETE. The
         per-monitor builder rebuilds its clip on every new segment, so this
@@ -183,11 +197,14 @@ class CombinedClipBuilder:
         Re-encoding the 4K grid once per completed window (instead of on every
         segment) also keeps CPU impact low.
         """
-        window_key = clip_path.stem.rsplit("_m", 1)[0]   # "2026-05-31_10-00-00"
-
-        to_build: list[tuple[list[Path], Path, str]] = []
+        to_build: list[tuple[list[Path], Path, str, datetime]] = []
         with self._lock:
             self._seen_windows.add(window_key)
+            self._window_clips[window_key].add(clip_path)
+            prev = self._window_real_start.get(window_key)
+            if prev is None or real_start < prev:
+                self._window_real_start[window_key] = real_start
+
             newest = max(self._seen_windows)
             for w in sorted(self._seen_windows):
                 if w >= newest:
@@ -195,27 +212,30 @@ class CombinedClipBuilder:
                 if w in self._submitted:
                     continue
                 available = sorted(
-                    f for f in self._raw_dir.glob(f"{w}_m*.mp4")
-                    if ".tmp." not in f.name
+                    p for p in self._window_clips.get(w, ())
+                    if p.exists() and ".tmp." not in p.name
                 )
                 if not available:
                     continue
-                output = self._local_output(w)
+                w_real_start = self._window_real_start[w]
+                output = self._local_output(w_real_start)
                 self._submitted.add(w)
                 if output.exists():
                     continue
-                to_build.append((list(available), output, w))
+                to_build.append((list(available), output, w, w_real_start))
 
-        for clips, output, w in to_build:
+        for clips, output, w, w_real_start in to_build:
             logger.info(
                 "[combined] Window {} complete ({} monitor(s)) → queuing combine.",
                 w, len(clips),
             )
-            self._submit(clips, output, w)
+            self._submit(clips, output, w, w_real_start)
 
-    def _submit(self, clips: list[Path], output: Path, window_key: str) -> None:
+    def _submit(
+        self, clips: list[Path], output: Path, window_key: str, real_start: datetime
+    ) -> None:
         try:
-            self._executor.submit(self._build, clips, output, window_key)
+            self._executor.submit(self._build, clips, output, window_key, real_start)
         except RuntimeError:
             logger.debug("[combined] Executor shut down; skipping {}.", window_key)
 
@@ -236,16 +256,32 @@ class CombinedClipBuilder:
             (which can span many days) would mean a long CPU/disk-heavy 4K
             re-encode burst on startup.  ``None`` rebuilds every missing window.
         """
-        from collections import defaultdict  # noqa: PLC0415
         from datetime import timedelta  # noqa: PLC0415
 
+        # Per-monitor filenames now embed each monitor's own real segment start
+        # (not a shared floor prefix), so the window bucket has to be
+        # RE-DERIVED by flooring each parsed real start — this reliably
+        # reconstructs the same bucket across monitors because every real
+        # start, by construction, floors into its own correctly-shared window.
         windows: dict[str, list[Path]] = defaultdict(list)
+        window_real_start: dict[str, datetime] = {}
         for clip in self._raw_dir.glob("*_m*.mp4"):
             if ".tmp." in clip.name:
                 continue
-            stem = clip.stem
-            window_key = stem.rsplit("_m", 1)[0]
+            real_start = parse_clip_start(clip)
+            if real_start is None:
+                logger.warning(
+                    "[combined] Recovery: cannot parse start time from {} — skipping.",
+                    clip.name,
+                )
+                continue
+            window_key = floor_to_window(real_start, self._window_minutes).strftime(
+                "%Y-%m-%d_%H-%M-%S"
+            )
             windows[window_key].append(clip)
+            prev = window_real_start.get(window_key)
+            if prev is None or real_start < prev:
+                window_real_start[window_key] = real_start
 
         if not windows:
             logger.info("[combined] Recovery: no per-monitor clips found.")
@@ -253,11 +289,17 @@ class CombinedClipBuilder:
 
         # The newest window may still be recording (its per-monitor clips will
         # keep growing). Skip it so we don't freeze a partial combine — the live
-        # path combines it once the next hour starts. Seed _seen_windows with
+        # path combines it once the next hour starts. Seed internal state with
         # every window so that handoff works.
         newest = max(windows)
         with self._lock:
             self._seen_windows.update(windows.keys())
+            for window_key, clips in windows.items():
+                self._window_clips[window_key].update(clips)
+            for window_key, real_start in window_real_start.items():
+                prev = self._window_real_start.get(window_key)
+                if prev is None or real_start < prev:
+                    self._window_real_start[window_key] = real_start
 
         # Window keys are UTC timestamps; only backfill recent ones if asked.
         cutoff_key: str | None = None
@@ -274,7 +316,8 @@ class CombinedClipBuilder:
                 skipped_old += 1
                 continue   # older than the backfill horizon — leave as-is
             clips = sorted(windows[window_key])
-            output = self._local_output(window_key)
+            w_real_start = self._window_real_start[window_key]
+            output = self._local_output(w_real_start)
             if output.exists():
                 continue
             with self._lock:
@@ -285,7 +328,7 @@ class CombinedClipBuilder:
                 "[combined] Recovery: queuing {} ({} clip(s) available).",
                 output.name, len(clips),
             )
-            self._submit(clips, output, window_key)
+            self._submit(clips, output, window_key, w_real_start)
             queued += 1
 
         if skipped_old:
@@ -298,21 +341,6 @@ class CombinedClipBuilder:
             logger.info("[combined] Recovery: {} combined clip(s) queued for building.", queued)
         else:
             logger.info("[combined] Recovery: all combined clips are up-to-date.")
-
-    def shutdown(self) -> None:
-        # Cancel pending futures immediately.
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        # Kill the active FFmpeg process so the background thread unblocks and
-        # Python's atexit handler (which joins all executor threads) can finish
-        # instead of hanging until the encode completes.
-        with self._proc_lock:
-            if self._active_proc is not None:
-                try:
-                    self._active_proc.kill()
-                except OSError:
-                    pass
-                self._active_proc = None
-        logger.info("[combined] Executor shut down.")
 
     def _purge_stale_temps(self) -> None:
         for stale in self._output_dir.glob("*.tmp.mp4"):
@@ -329,6 +357,7 @@ class CombinedClipBuilder:
         clips: list[Path],
         output: Path,
         window_key: str,
+        real_start: datetime,
     ) -> None:
         """Merge per-monitor clips into one combined MP4. Runs in executor."""
         # Re-verify inside the job: only use final clips (no .tmp. in name)
@@ -339,7 +368,6 @@ class CombinedClipBuilder:
 
         output.parent.mkdir(parents=True, exist_ok=True)
         tmp = output.with_suffix(".tmp.mp4")
-        concat_file: Optional[Path] = None
 
         try:
             n = len(available)
@@ -351,15 +379,14 @@ class CombinedClipBuilder:
             )
 
             # Wall-clock overlay is folded into THIS encode (single pass) rather
-            # than burned by a second full transcode afterwards.  Window keys are
-            # UTC (segment timestamps are UTC).
+            # than burned by a second full transcode afterwards. real_start is
+            # already UTC (segment timestamps are UTC) — using it directly here
+            # (instead of the floor-based window_key) fixes a prior bug where the
+            # burned-in timestamp could be off by up to the window length.
             drawtext: Optional[str] = None
             if self._ts_adapter is not None:
-                clip_start = datetime.strptime(
-                    window_key, "%Y-%m-%d_%H-%M-%S"
-                ).replace(tzinfo=timezone.utc)
                 try:
-                    drawtext = self._ts_adapter.build_drawtext(clip_start)
+                    drawtext = self._ts_adapter.build_drawtext(real_start)
                 except Exception:
                     logger.exception(
                         "[combined] drawtext build failed for {} — overlay skipped.",
@@ -397,17 +424,10 @@ class CombinedClipBuilder:
 
             cmd += ["-movflags", "+faststart", "-y", str(tmp)]
 
-            def _on_started(proc: subprocess.Popen) -> None:
-                with self._proc_lock:
-                    self._active_proc = proc
-
-            def _on_finished() -> None:
-                with self._proc_lock:
-                    self._active_proc = None
-
+            on_started, on_finished = self._process_tracking_callbacks()
             result = run_batched_ffmpeg(
                 cmd, label="combined", timeout=3600,
-                on_started=_on_started, on_finished=_on_finished,
+                on_started=on_started, on_finished=on_finished,
             )
 
             if result.returncode != 0:
@@ -435,6 +455,3 @@ class CombinedClipBuilder:
             logger.exception("[combined] Error combining {}", output.name)
             with self._lock:
                 self._submitted.discard(window_key)
-        finally:
-            if concat_file is not None:
-                concat_file.unlink(missing_ok=True)

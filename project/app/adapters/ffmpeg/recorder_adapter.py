@@ -37,199 +37,15 @@ _SEGMENT_FILENAME_RE = re.compile(
 )
 
 
-class FFmpegRecorderAdapter(RecorderPort):
+class _PipelineResolverMixin:
+    """Command building + capture-backend/pipeline resolution (memoised probes).
+
+    Mixed into :class:`FFmpegRecorderAdapter` — kept in this module (not a
+    separate file) so the existing test suite's ``unittest.mock.patch(...)``
+    targets (e.g. ``app.adapters.ffmpeg.recorder_adapter.get_encoder``) keep
+    resolving correctly: a patch only rewrites the name binding in the module
+    where the call site is defined, not wherever a mixin happens to be mixed in.
     """
-    FFmpeg-based continuous segment recorder.
-
-    Captures one monitor via gdigrab using explicit virtual-desktop coordinates
-    (offset_x, offset_y, video_size) from MonitorInfo — no DXGI session required.
-
-    A background watchdog thread monitors the output directory. When a new
-    segment file appears, the previous one is considered complete and is
-    forwarded to the on_segment_ready callback for indexing.
-    """
-
-    def __init__(
-        self,
-        segment_duration: int = 10,
-        framerate: int = 30,
-        crf: int = 28,
-        width: int = 1920,
-        height: int = 1080,
-        capture_source: str = "desktop",
-        capture_backend: str = "auto",
-        capture_pipeline: str = "auto",
-        codec: str = "h264",
-        on_segment_ready: Optional[Callable[[Segment], None]] = None,
-        on_crash: Optional[Callable[[], None]] = None,
-        preview_path: Optional[Path] = None,
-        preview_fps: int = 2,
-        preview_width: int = 1280,
-    ) -> None:
-        self._segment_duration = segment_duration
-        self._framerate = framerate
-        self._crf = crf
-        self._width = width
-        self._height = height
-        self._capture_source = capture_source
-        # Screen-capture backend.  "ddagrab" uses the DXGI Desktop Duplication
-        # API (GPU frames, no GDI BitBlt) — this eliminates the on-screen mouse
-        # cursor flicker caused by gdigrab's BitBlt(SRCCOPY|CAPTUREBLT), which
-        # forces the display driver to hide/redraw the hardware cursor sprite on
-        # every frame (~30x/s).  "gdigrab" is the legacy GDI backend, kept as a
-        # fallback.  "auto" probes for ddagrab at start() and falls back to
-        # gdigrab if the DXGI path is unavailable (older Windows / no D3D11).
-        self._capture_backend = (capture_backend or "auto").lower()
-        self._resolved_backend: Optional[str] = None
-        self._ddagrab_probe: Optional[bool] = None
-        # Capture filtergraph: "auto" | "zerocopy" | "legacy" — see
-        # _resolve_pipeline().  Only meaningful when the backend is ddagrab.
-        self._capture_pipeline = (capture_pipeline or "auto").lower()
-        self._resolved_pipeline: Optional[str] = None
-        # Zero-copy probe cache, keyed by "{family}:{monitor.index}" — a GPU
-        # filter chain that fails on one monitor (e.g. capture on a dGPU while
-        # the encoder resolves to the iGPU) may still work on another.
-        self._zerocopy_probe: dict[str, bool] = {}
-        self._codec = codec
-        self._on_segment_ready = on_segment_ready
-        self._on_crash = on_crash
-        # When preview_path is set the FFmpeg command uses filter_complex split:
-        # one stream → segment recording (full fps), another → JPEG preview (low fps).
-        # This eliminates the need for a separate capture process and avoids the
-        # double-gdigrab screen flickering caused by concurrent BitBlt calls.
-        self._preview_path  = preview_path
-        self._preview_fps   = preview_fps
-        self._preview_width = preview_width
-        self._monitors: list[MonitorInfo] = []
-        self._monitors_lock = threading.RLock()
-
-        self._process: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
-        self._output_dir: Optional[Path] = None
-        self._watchdog_thread: Optional[threading.Thread] = None
-        self._stderr_thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-        self._known_files: Set[str] = set()
-        self._last_segment_time: float = 0.0
-        # Rolling buffer of the last N stderr lines — dumped at ERROR level on crash.
-        self._stderr_tail: deque[str] = deque(maxlen=30)
-
-        # Phase-tagged logger (F2 CAPTURE). mon is filled once set_monitor runs.
-        self._mon_tag = "-"
-        self._log = logger.bind(phase="CAPTURE", mon=self._mon_tag)
-
-    # ------------------------------------------------------------------
-    # RecorderPort interface
-    # ------------------------------------------------------------------
-
-    def start(self, output_dir: Path) -> None:
-        if self._process is not None:
-            raise RuntimeError("Recorder is already running.")
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        self._output_dir = output_dir
-        self._stop_event.clear()
-
-        # Re-index any segments left on disk from a previous run so that
-        # clips can be built immediately after a crash-restart.
-        self._recover_existing_segments(output_dir)
-
-        # Decide the capture backend once per process (memoised).  Doing it here
-        # rather than in __init__ keeps the (potentially slow) ddagrab probe off
-        # the constructor and out of unit tests that never start the recorder.
-        self._resolved_backend = self._resolve_backend()
-
-        cmd = self._build_ffmpeg_command(output_dir)
-        self._log.info("Starting FFmpeg: {}", " ".join(cmd))
-
-        # Spawned suspended so it cannot run any code (or be affected by the
-        # historical Popen-then-assign orphan race) until it has already been
-        # assigned to the Job — see ADR-0016 and _CREATE_SUSPENDED above.
-        self._process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW | _CREATE_SUSPENDED,
-        )
-        assign_to_job(self._process)
-        try:
-            resume_suspended_process(self._process.pid)
-        except Exception:
-            # A suspended process that never resumes is a silent recording
-            # outage — worse than a loud failure the existing crash/backoff
-            # machinery already knows how to retry (RecorderSupervisor).
-            self._log.exception("Failed to resume suspended FFmpeg process — killing it.")
-            self._process.kill()
-            self._process.wait(timeout=5)
-            self._process = None
-            raise
-        track_process(self._process.pid, category="recorder", label=self._mon_tag)
-        self._last_segment_time = time.monotonic()
-
-        self._stderr_thread = threading.Thread(
-            target=self._drain_stderr,
-            daemon=True,
-            name="recorder-stderr",
-        )
-        self._stderr_thread.start()
-
-        self._watchdog_thread = threading.Thread(
-            target=self._watchdog_loop,
-            daemon=True,
-            name="recorder-watchdog",
-        )
-        self._watchdog_thread.start()
-        self._log.info("Recorder started. Output: {}", output_dir)
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        if self._process is not None:
-            untrack_process(self._process.pid)
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._log.warning("FFmpeg did not stop in time — killed.")
-            self._process = None
-        if self._watchdog_thread is not None:
-            self._watchdog_thread.join(timeout=3)
-            self._watchdog_thread = None
-        if self._stderr_thread is not None:
-            self._stderr_thread.join(timeout=3)
-            self._stderr_thread = None
-        self._log.info("Recorder stopped.")
-
-    def is_running(self) -> bool:
-        return self._process is not None and self._process.poll() is None
-
-    def update_codec(self, codec: str) -> None:
-        """Change the codec used for encoding. Takes effect on the next start().
-
-        Safe to call while the recorder is stopped (e.g. during a controlled
-        restart triggered by the user changing the encoder in Settings).
-        """
-        self._codec = codec.lower()
-        logger.info("Recorder codec updated to '{}' (takes effect on next start).", self._codec)
-
-    def set_monitor(self, monitor: MonitorInfo) -> None:
-        """Set the monitor to capture. Takes effect on the next start()."""
-        with self._monitors_lock:
-            self._monitors = [monitor]
-        # Now that we know which screen this recorder serves, tag all its logs.
-        self._mon_tag = f"m{monitor.index}"
-        self._log = logger.bind(phase="CAPTURE", mon=self._mon_tag)
-        self._log.info(
-            "Capture monitor: {} (gdigrab region {}x{} @ {},{} on virtual desktop)",
-            monitor.display_name,
-            monitor.width,
-            monitor.height,
-            monitor.x,
-            monitor.y,
-        )
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
 
     def _build_ffmpeg_command(self, output_dir: Path) -> list[str]:
         """Build the FFmpeg capture command for the configured monitor.
@@ -555,6 +371,14 @@ class FFmpegRecorderAdapter(RecorderPort):
         self._ddagrab_probe = ok
         return ok
 
+
+class _WatchdogRecoveryMixin:
+    """Segment recovery + the background watchdog loop (crash/stall detection).
+
+    Mixed into :class:`FFmpegRecorderAdapter` — see :class:`_PipelineResolverMixin`
+    for why this stays in the same module rather than a separate file.
+    """
+
     def _recover_existing_segments(self, output_dir: Path) -> None:
         """Re-index .ts files left on disk from a previous run."""
         existing = sorted(output_dir.glob("seg_*.ts"), key=lambda f: f.name)
@@ -712,6 +536,203 @@ class FFmpegRecorderAdapter(RecorderPort):
                     logger.debug("[ffmpeg] {}", line)
         except Exception as exc:  # noqa: BLE001
             logger.debug("stderr drain ended unexpectedly: {}", exc)
+
+
+class FFmpegRecorderAdapter(RecorderPort, _PipelineResolverMixin, _WatchdogRecoveryMixin):
+    """
+    FFmpeg-based continuous segment recorder.
+
+    Captures one monitor via gdigrab using explicit virtual-desktop coordinates
+    (offset_x, offset_y, video_size) from MonitorInfo — no DXGI session required.
+
+    A background watchdog thread monitors the output directory. When a new
+    segment file appears, the previous one is considered complete and is
+    forwarded to the on_segment_ready callback for indexing.
+
+    Split across three collaborators for readability (all in this module, not
+    separate files — see :class:`_PipelineResolverMixin`'s docstring for why):
+    process lifecycle (this class), command-building/pipeline-resolution
+    (:class:`_PipelineResolverMixin`), and segment-watchdog/recovery
+    (:class:`_WatchdogRecoveryMixin`).
+    """
+
+    def __init__(
+        self,
+        segment_duration: int = 10,
+        framerate: int = 30,
+        crf: int = 28,
+        width: int = 1920,
+        height: int = 1080,
+        capture_source: str = "desktop",
+        capture_backend: str = "auto",
+        capture_pipeline: str = "auto",
+        codec: str = "h264",
+        on_segment_ready: Optional[Callable[[Segment], None]] = None,
+        on_crash: Optional[Callable[[], None]] = None,
+        preview_path: Optional[Path] = None,
+        preview_fps: int = 2,
+        preview_width: int = 1280,
+    ) -> None:
+        self._segment_duration = segment_duration
+        self._framerate = framerate
+        self._crf = crf
+        self._width = width
+        self._height = height
+        self._capture_source = capture_source
+        # Screen-capture backend.  "ddagrab" uses the DXGI Desktop Duplication
+        # API (GPU frames, no GDI BitBlt) — this eliminates the on-screen mouse
+        # cursor flicker caused by gdigrab's BitBlt(SRCCOPY|CAPTUREBLT), which
+        # forces the display driver to hide/redraw the hardware cursor sprite on
+        # every frame (~30x/s).  "gdigrab" is the legacy GDI backend, kept as a
+        # fallback.  "auto" probes for ddagrab at start() and falls back to
+        # gdigrab if the DXGI path is unavailable (older Windows / no D3D11).
+        self._capture_backend = (capture_backend or "auto").lower()
+        self._resolved_backend: Optional[str] = None
+        self._ddagrab_probe: Optional[bool] = None
+        # Capture filtergraph: "auto" | "zerocopy" | "legacy" — see
+        # _resolve_pipeline().  Only meaningful when the backend is ddagrab.
+        self._capture_pipeline = (capture_pipeline or "auto").lower()
+        self._resolved_pipeline: Optional[str] = None
+        # Zero-copy probe cache, keyed by "{family}:{monitor.index}" — a GPU
+        # filter chain that fails on one monitor (e.g. capture on a dGPU while
+        # the encoder resolves to the iGPU) may still work on another.
+        self._zerocopy_probe: dict[str, bool] = {}
+        self._codec = codec
+        self._on_segment_ready = on_segment_ready
+        self._on_crash = on_crash
+        # When preview_path is set the FFmpeg command uses filter_complex split:
+        # one stream → segment recording (full fps), another → JPEG preview (low fps).
+        # This eliminates the need for a separate capture process and avoids the
+        # double-gdigrab screen flickering caused by concurrent BitBlt calls.
+        self._preview_path  = preview_path
+        self._preview_fps   = preview_fps
+        self._preview_width = preview_width
+        self._monitors: list[MonitorInfo] = []
+        self._monitors_lock = threading.RLock()
+
+        self._process: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
+        self._output_dir: Optional[Path] = None
+        self._watchdog_thread: Optional[threading.Thread] = None
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._known_files: Set[str] = set()
+        self._last_segment_time: float = 0.0
+        # Rolling buffer of the last N stderr lines — dumped at ERROR level on crash.
+        self._stderr_tail: deque[str] = deque(maxlen=30)
+
+        # Phase-tagged logger (F2 CAPTURE). mon is filled once set_monitor runs.
+        self._mon_tag = "-"
+        self._log = logger.bind(phase="CAPTURE", mon=self._mon_tag)
+
+    # ------------------------------------------------------------------
+    # RecorderPort interface
+    # ------------------------------------------------------------------
+
+    def start(self, output_dir: Path) -> None:
+        if self._process is not None:
+            raise RuntimeError("Recorder is already running.")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self._output_dir = output_dir
+        self._stop_event.clear()
+
+        # Re-index any segments left on disk from a previous run so that
+        # clips can be built immediately after a crash-restart.
+        self._recover_existing_segments(output_dir)
+
+        # Decide the capture backend once per process (memoised).  Doing it here
+        # rather than in __init__ keeps the (potentially slow) ddagrab probe off
+        # the constructor and out of unit tests that never start the recorder.
+        self._resolved_backend = self._resolve_backend()
+
+        cmd = self._build_ffmpeg_command(output_dir)
+        self._log.info("Starting FFmpeg: {}", " ".join(cmd))
+
+        # Spawned suspended so it cannot run any code (or be affected by the
+        # historical Popen-then-assign orphan race) until it has already been
+        # assigned to the Job — see ADR-0016 and _CREATE_SUSPENDED above.
+        self._process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW | _CREATE_SUSPENDED,
+        )
+        assign_to_job(self._process)
+        try:
+            resume_suspended_process(self._process.pid)
+        except Exception:
+            # A suspended process that never resumes is a silent recording
+            # outage — worse than a loud failure the existing crash/backoff
+            # machinery already knows how to retry (RecorderSupervisor).
+            self._log.exception("Failed to resume suspended FFmpeg process — killing it.")
+            self._process.kill()
+            self._process.wait(timeout=5)
+            self._process = None
+            raise
+        track_process(self._process.pid, category="recorder", label=self._mon_tag)
+        self._last_segment_time = time.monotonic()
+
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr,
+            daemon=True,
+            name="recorder-stderr",
+        )
+        self._stderr_thread.start()
+
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop,
+            daemon=True,
+            name="recorder-watchdog",
+        )
+        self._watchdog_thread.start()
+        self._log.info("Recorder started. Output: {}", output_dir)
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._process is not None:
+            untrack_process(self._process.pid)
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._log.warning("FFmpeg did not stop in time — killed.")
+            self._process = None
+        if self._watchdog_thread is not None:
+            self._watchdog_thread.join(timeout=3)
+            self._watchdog_thread = None
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=3)
+            self._stderr_thread = None
+        self._log.info("Recorder stopped.")
+
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    def update_codec(self, codec: str) -> None:
+        """Change the codec used for encoding. Takes effect on the next start().
+
+        Safe to call while the recorder is stopped (e.g. during a controlled
+        restart triggered by the user changing the encoder in Settings).
+        """
+        self._codec = codec.lower()
+        logger.info("Recorder codec updated to '{}' (takes effect on next start).", self._codec)
+
+    def set_monitor(self, monitor: MonitorInfo) -> None:
+        """Set the monitor to capture. Takes effect on the next start()."""
+        with self._monitors_lock:
+            self._monitors = [monitor]
+        # Now that we know which screen this recorder serves, tag all its logs.
+        self._mon_tag = f"m{monitor.index}"
+        self._log = logger.bind(phase="CAPTURE", mon=self._mon_tag)
+        self._log.info(
+            "Capture monitor: {} (gdigrab region {}x{} @ {},{} on virtual desktop)",
+            monitor.display_name,
+            monitor.width,
+            monitor.height,
+            monitor.x,
+            monitor.y,
+        )
 
 
 def _encoder_family(encoder: str) -> Optional[str]:

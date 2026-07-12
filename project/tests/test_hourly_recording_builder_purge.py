@@ -114,7 +114,10 @@ class TestOpportunisticPurgeDuringBuild:
             "app.adapters.ffmpeg.hourly_recording_builder.run_batched_ffmpeg",
             side_effect=fake_run,
         ):
-            builder._build([seg], output, raw_size_bytes=len(b"fake-ts"))
+            builder._build(
+                [seg], output, raw_size_bytes=len(b"fake-ts"),
+                window_key="2026-01-01_01-00-00", real_start=now,
+            )
 
         assert not orphan.exists()
         assert output.exists()

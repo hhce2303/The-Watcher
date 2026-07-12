@@ -51,7 +51,10 @@ class TestCombinedClipBuilderMigration:
             "app.adapters.ffmpeg.combined_clip_builder.run_batched_ffmpeg",
             side_effect=fake_run,
         ):
-            builder._build([clip], tmp_path / "clips" / "out.mp4", "2026-01-01_00-00-00")
+            builder._build(
+                [clip], tmp_path / "clips" / "out.mp4", "2026-01-01_00-00-00",
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
 
         assert seen["active_during_call"] is not None
         assert builder._active_proc is None
@@ -68,7 +71,10 @@ class TestCombinedClipBuilderMigration:
             "app.adapters.ffmpeg.combined_clip_builder.run_batched_ffmpeg",
             side_effect=fake_run,
         ):
-            builder._build([clip], output, "2026-01-01_00-00-00")
+            builder._build(
+                [clip], output, "2026-01-01_00-00-00",
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
 
         assert not output.exists()
         assert "2026-01-01_00-00-00" not in builder._submitted
@@ -86,7 +92,10 @@ class TestCombinedClipBuilderMigration:
             "app.adapters.ffmpeg.combined_clip_builder.run_batched_ffmpeg",
             side_effect=fake_run,
         ):
-            builder._build([clip], output, "2026-01-01_00-00-00")
+            builder._build(
+                [clip], output, "2026-01-01_00-00-00",
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
 
         assert output.exists()
         assert output.read_bytes() == b"combined output"
@@ -117,7 +126,10 @@ class TestRecordingClipBuilderMigration:
             "app.adapters.ffmpeg.hourly_recording_builder.run_batched_ffmpeg",
             side_effect=fake_run,
         ):
-            builder._build([seg], output_dir / "out_m0.mp4", raw_size_bytes=len(b"fake-ts"))
+            builder._build(
+                [seg], output_dir / "out_m0.mp4", raw_size_bytes=len(b"fake-ts"),
+                window_key="2026-01-01_00-00-00", real_start=seg.started_at,
+            )
 
         assert seen["active_during_call"] is not None
         assert builder._active_proc is None
@@ -125,8 +137,12 @@ class TestRecordingClipBuilderMigration:
     def test_success_replaces_tmp_with_output_and_fires_callback(self, tmp_path):
         output_dir = tmp_path / "clips"
         ready: list[Path] = []
+
+        def _capture(path: Path, window_key: str, real_start: datetime) -> None:
+            ready.append(path)
+
         builder = RecordingClipBuilder(
-            output_dir=output_dir, monitor_index=0, on_clip_ready=ready.append
+            output_dir=output_dir, monitor_index=0, on_clip_ready=_capture
         )
         seg = self._make_segment(tmp_path, "seg1.ts")
         output = output_dir / "out_m0.mp4"
@@ -139,7 +155,10 @@ class TestRecordingClipBuilderMigration:
             "app.adapters.ffmpeg.hourly_recording_builder.run_batched_ffmpeg",
             side_effect=fake_run,
         ):
-            builder._build([seg], output, raw_size_bytes=len(b"fake-ts"))
+            builder._build(
+                [seg], output, raw_size_bytes=len(b"fake-ts"),
+                window_key="2026-01-01_00-00-00", real_start=seg.started_at,
+            )
 
         assert output.exists()
         assert ready == [output]

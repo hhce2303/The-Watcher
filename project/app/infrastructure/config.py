@@ -51,6 +51,10 @@ class Settings:
     segment_dir:    Path = _resolve_dir("SEGMENT_DIR",     r"C:\WatcherData\segments")
     clips_dir:      Path = _resolve_dir("CLIPS_DIR",       r"C:\WatcherData\clips")
     raw_clips_dir:  Path = _resolve_dir("RAW_CLIPS_DIR",   r"C:\WatcherData\clips_raw")
+    # Event-triggered (auto/manual) clips — kept out of clips_dir so combined
+    # recordings and event highlights don't mix in the same folder. Fixed on
+    # local disk like raw_clips_dir — does NOT follow a user-relocated clips_dir.
+    event_clips_dir: Path = _resolve_dir("CLIPS_EVENTS_DIR", r"C:\WatcherData\clips_events")
 
     # Continuous recording: hours of recordings to retain on disk.
     # Default: 8 hours.  Override via RETENTION_HOURS env var.
@@ -126,6 +130,21 @@ class Settings:
     event_cooldown_seconds: int = int(os.getenv("EVENT_COOLDOWN_SECONDS", "30"))
     # Delay between retry attempts when a clip build fails.
     clip_retry_delay_seconds: int = int(os.getenv("CLIP_RETRY_DELAY_SECONDS", "30"))
+    # Minimum seconds between two auto-detection clip BUILDS (distinct from
+    # EVENT_COOLDOWN_SECONDS, which only gates how often a detection becomes an
+    # AnalyticEvent for analytics/timeline purposes). Continuous detections
+    # (e.g. a person lingering) fire a new AnalyticEvent every cooldown period,
+    # but each one used to schedule its own full multi-monitor clip re-encode —
+    # with a 4-minute window (pre+post) and a 30s cooldown that meant up to 8
+    # heavily-overlapping clips got built for the same activity. Defaults to
+    # the full clip window (pre+post) so builds tile back-to-back with no
+    # overlap and no gaps instead of stacking redundant encodes.
+    event_auto_build_min_interval_seconds: int = int(
+        os.getenv(
+            "EVENT_AUTO_BUILD_MIN_INTERVAL_SECONDS",
+            str(event_pre_seconds + event_post_seconds),
+        )
+    )
 
     # ── Continuous-recording clip window ─────────────────────────────────────
     # CLIP_WINDOW_MINUTES — close the current rolling clip and start a new one

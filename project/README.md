@@ -39,7 +39,9 @@ The recording service is a self-contained inner hexagon. The UI is a pure adapte
 | `it` | yes | yes (WS server) | no |
 | `supervisor` | no | no | yes (WS client) |
 
-Role is configured via `USER_ROLE` in `.env`. The `supervisor` role skips the entire recording stack at startup.
+Role is configured per-machine in `%LOCALAPPDATA%\The Watcher\user_config.json` (`UserConfig.role`),
+set via the first-run role wizard or an IT-PIN-gated role change — not via `.env`. The
+`supervisor` role skips the entire recording stack at startup.
 
 The Operator restart watchdog (Scheduled Task, `app/infrastructure/scheduled_task.py`) can't be
 unit-tested — see
@@ -227,19 +229,21 @@ WatcherData/
 
 ## Configuration
 
-Copy `.env.example` to `.env` and adjust:
+Copy `.env.example` to `.env` and adjust. Role and the IT/Supervisor network peers
+(`it_ws_hosts`) are **not** set here — they're configured per-machine on first run (role
+wizard, then Settings → Network) and persisted in
+`%LOCALAPPDATA%\The Watcher\user_config.json`.
 
 ```env
-# Role: operator | it | supervisor
-USER_ROLE=operator
-
 # Recording
 SEGMENT_DURATION=10
 RETENTION_HOURS=2
 CAPTURE_FRAMERATE=30
 OUTPUT_WIDTH=1920
 OUTPUT_HEIGHT=1080
-VIDEO_CODEC=hevc_nvenc   # or hevc_qsv / hevc_amf / libx265
+VIDEO_CODEC=hevc   # or h264 — the concrete encoder (NVENC/QuickSync/AMF/CPU) is
+                   # auto-selected by encoder_selector.py from hardware plus the
+                   # UserConfig "driver" setting, not from this value directly.
 
 # Event clip
 EVENT_PRE_SECONDS=120
@@ -251,14 +255,15 @@ SEGMENT_DIR=C:/WatcherData/segments
 CLIPS_DIR=C:/WatcherData/clips
 
 # IT / Supervisor
-IT_WS_PORT=9000
-IT_WS_HOSTS=192.168.1.10,192.168.1.11
+IT_WS_PORT=9090
 SLC_STORAGE_HOST=\\SIG-SLC-Storage
 
 # NAS credentials (optional — for UNC share access)
 NAS_USERNAME=
 NAS_PASSWORD=
 ```
+
+See [`.env.example`](.env.example) for the full list of supported variables.
 
 ---
 
