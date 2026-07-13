@@ -65,7 +65,9 @@ src-tauri/          ← Rust shell: named-pipe IPC client, `watcher://` custom p
                        clip streaming with Range support, TD-5), tray, single-instance, window
                        close policy (operator window "indestructible" while daemon runs).
 src/                ← React UI: role-aware router, features/ per view, lib/ipc.ts + lib/events.ts
-                       as the only bridge to the backend, types/dto.gen.ts generated from dto.py.
+                       as the only bridge to the backend, types/dto.ts hand-maintained to mirror
+                       dto.py; types/dto.gen.ts is a generated snapshot used only by
+                       `npm run gen:dto:check` (CI) to catch drift — no app code imports it.
 ```
 
 ### Rules
@@ -75,7 +77,10 @@ src/                ← React UI: role-aware router, features/ per view, lib/ipc
 - React never talks to `core/` directly — only through `src/lib/ipc.ts` (commands) and
   `src/lib/events.ts` (typed bus event subscriptions), which go over the Tauri named-pipe IPC.
 - Live preview/video never goes over the JSON IPC channel — always the `watcher://` custom
-  protocol (TD-5). Regenerate `src/types/dto.gen.ts` (`npm run gen:dto`) after changing `dto.py`.
+  protocol (TD-5). After changing `dto.py`, mirror the shape by hand in `src/types/dto.ts` (the
+  file app code actually imports), then run `npm run gen:dto:check` — it regenerates
+  `src/types/dto.gen.ts` from `dto.py` and fails if that snapshot doesn't match what's committed,
+  catching drift between the Python and hand-written TS shapes. CI runs this on every PR.
 
 ---
 

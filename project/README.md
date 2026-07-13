@@ -123,7 +123,8 @@ project/
 │   ├── shell/                 ← AppShell, TabBar, Statusbar, HealthBadge, WindowControls
 │   ├── features/               ← recording, clips, player, settings, supervisor, delivery, mini, editor, it
 │   ├── lib/                    ← ipc.ts (typed command client), events.ts (typed bus events)
-│   └── types/dto.gen.ts        ← generated from `core/api/dto.py` (Pydantic → JSON Schema → TS)
+│   └── types/dto.ts            ← hand-maintained mirror of `core/api/dto.py`; dto.gen.ts is a
+│                                  generated snapshot `npm run gen:dto:check` diffs it against (CI)
 │
 ├── installer/
 │   ├── build.ps1            ← PyInstaller build script (headless backend only)
