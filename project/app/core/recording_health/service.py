@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import Optional
+from typing import Dict, Optional, Protocol, runtime_checkable
 
 from loguru import logger
 
 from app.core.recording_service.service import RecordingService, WorkerHealth
+
+
+@runtime_checkable
+class LivenessCheck(Protocol):
+    """Minimal duck-typed contract for a background service RecordingHealthService
+    can watch — anything with ``is_alive()`` (a thread-backed adapter). Kept as a
+    local Protocol (not an import of a concrete adapter) so this stays core-only
+    and does not reach into ``app/adapters``.
+    """
+
+    def is_alive(self) -> bool: ...
 
 
 class RecordingHealthService:
@@ -21,6 +32,16 @@ class RecordingHealthService:
       or WARNING/CRITICAL (degraded / permanently failed).
     - Fires ``on_degraded`` when any worker is not RECORDING so the UI can
       show a warning badge without needing to know about individual workers.
+    - Also watches any ``background_services`` passed in (e.g. the
+      live-inference/auto-event thread) via ``is_alive()`` — these have no
+      FFmpeg process to poll, but a dead one silently ends all further
+      automatic events/clips while raw capture keeps running normally, which
+      is otherwise invisible without reading logs.
+    - If a background service stays dead for ``hang_grace_seconds`` straight,
+      fires ``on_hang_timeout`` once — the composition root (main.py) decides
+      what that means (e.g. a hard process exit so the OS-level restart
+      watchdog revives a clean process); this service only detects and
+      reports, it never takes down or restarts anything itself.
     - Has its own daemon thread with internal exception guard so it never
       takes down the application if it crashes.
 
@@ -36,17 +57,28 @@ class RecordingHealthService:
         poll_interval_seconds: float = 30.0,
         on_degraded: Optional[Callable[[dict], None]] = None,
         on_recovered: Optional[Callable[[], None]] = None,
+        background_services: Optional[Dict[str, LivenessCheck]] = None,
+        on_hang_timeout: Optional[Callable[[list[str]], None]] = None,
+        hang_grace_seconds: Optional[float] = None,
     ) -> None:
         self._rs              = recording_service
         self._interval        = poll_interval_seconds
         self._on_degraded     = on_degraded
         self._on_recovered    = on_recovered
+        self._background_services = dict(background_services or {})
+        self._on_hang_timeout = on_hang_timeout
+        self._hang_grace_polls = (
+            max(1, round(hang_grace_seconds / poll_interval_seconds))
+            if hang_grace_seconds else None
+        )
 
         self._stop_event      = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
         self._consecutive_degraded = 0
         self._was_degraded         = False
+        self._consecutive_background_dead = 0
+        self._hang_timeout_fired   = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -110,6 +142,22 @@ class RecordingHealthService:
         if not report["workers"]:
             logger.warning("[HEALTH] RecordingService has no registered workers.")
 
+        dead_background = [
+            name for name, svc in self._background_services.items() if not svc.is_alive()
+        ]
+        if dead_background:
+            all_ok = False
+            problems.extend(f"{name} DEAD" for name in dead_background)
+            self._consecutive_background_dead += 1
+            logger.critical(
+                "[HEALTH] background service(s) dead (poll #{}): {}",
+                self._consecutive_background_dead,
+                ", ".join(dead_background),
+            )
+        else:
+            self._consecutive_background_dead = 0
+            self._hang_timeout_fired = False
+
         if all_ok:
             self._consecutive_degraded = 0
             if self._was_degraded:
@@ -135,3 +183,23 @@ class RecordingHealthService:
                     self._on_degraded(report)
                 except Exception:
                     logger.exception("on_degraded callback raised.")
+
+            if (
+                dead_background
+                and self._hang_grace_polls is not None
+                and not self._hang_timeout_fired
+                and self._consecutive_background_dead >= self._hang_grace_polls
+            ):
+                self._hang_timeout_fired = True
+                logger.critical(
+                    "[HEALTH] background service(s) {} dead for {} consecutive poll(s) "
+                    "(~{:.0f}s) — firing on_hang_timeout.",
+                    ", ".join(dead_background),
+                    self._consecutive_background_dead,
+                    self._consecutive_background_dead * self._interval,
+                )
+                if self._on_hang_timeout is not None:
+                    try:
+                        self._on_hang_timeout(dead_background)
+                    except Exception:
+                        logger.exception("on_hang_timeout callback raised.")

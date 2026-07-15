@@ -145,6 +145,16 @@ class Settings:
             str(event_pre_seconds + event_post_seconds),
         )
     )
+    # How long the live-inference/auto-event background thread may stay dead
+    # (per RecordingHealthService's is_alive() check) before the Operator
+    # daemon deliberately exits (non-zero code) so the Scheduled Task watchdog
+    # revives a clean process. Raw capture/retention is unaffected by that
+    # thread dying, so this is the only way to recover without a human
+    # noticing and killing the process by hand. Only wired for the operator
+    # daemon (main.py) — never for the IT/Supervisor sidecar.
+    event_pipeline_hang_grace_seconds: int = int(
+        os.getenv("EVENT_PIPELINE_HANG_GRACE_SECONDS", "300")
+    )
 
     # ── Continuous-recording clip window ─────────────────────────────────────
     # CLIP_WINDOW_MINUTES — close the current rolling clip and start a new one

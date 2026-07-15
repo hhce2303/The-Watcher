@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -44,6 +45,28 @@ def _bus_sink(message: "loguru.Message") -> None:  # type: ignore[name-defined]
         pass
 
 
+def _resolve_log_dir() -> Path:
+    """Where watcher.log lives — resolved before Settings exists (this runs
+    first in main()), so it can't read config.py's WATCHER_LOG_DIR-less
+    settings object; it reads the env var directly instead.
+
+    Frozen builds keep logs next to the executable (unchanged). Dev-mode used
+    to default to ``Path(".")`` — the repo checkout, which on this machine (and
+    plausibly other dev boxes) is a OneDrive-synced folder. config.py already
+    keeps segment_dir/clips_dir/events.db OUT of OneDrive so Defender/OneDrive
+    sync can never hold a lock on them; the log file never got the same
+    treatment, and every thread shares one loguru sink — a single stuck write
+    would stall all of them simultaneously. Default dev-mode logs to the same
+    local root the rest of the app's data already uses.
+    """
+    override = os.getenv("WATCHER_LOG_DIR")
+    if override:
+        return Path(override)
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent / "logs"
+    return Path(r"C:\WatcherData") / "logs"
+
+
 def configure_logging(log_level: str = "INFO") -> None:
     """Set up loguru sinks: coloured stderr + rotating file + Qt panel.
 
@@ -70,11 +93,8 @@ def configure_logging(log_level: str = "INFO") -> None:
             colorize=True,
         )
 
-    # Resolve log path relative to executable so logs land next to the app,
-    # not in whatever the current working directory happens to be.
-    _base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(".")
-    _log_file = _base / "logs" / "watcher.log"
-    _log_file.parent.mkdir(exist_ok=True)
+    _log_file = _resolve_log_dir() / "watcher.log"
+    _log_file.parent.mkdir(parents=True, exist_ok=True)
 
     logger.add(
         str(_log_file),
