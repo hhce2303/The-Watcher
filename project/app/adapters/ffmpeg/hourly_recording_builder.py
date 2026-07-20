@@ -3,8 +3,8 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import threading
+import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -12,25 +12,15 @@ from loguru import logger
 
 from collections.abc import Callable
 
+from app.adapters.ffmpeg.builder_process_mixin import FfmpegBuilderExecutorMixin
+from app.adapters.ffmpeg.clip_window import floor_to_window
 from app.adapters.ffmpeg.encoder_selector import codec_tag, effective_codec
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
-from app.adapters.ffmpeg.process_guard import assign_to_job
+from app.adapters.ffmpeg.process_guard import run_batched_ffmpeg
 from app.core.recording_service.models import Segment
 
 
-def _floor_to_window(dt: datetime, window_minutes: int) -> datetime:
-    """Round ``dt`` down to the nearest ``window_minutes`` boundary."""
-    total_minutes = dt.hour * 60 + dt.minute
-    floor_minutes = (total_minutes // window_minutes) * window_minutes
-    return dt.replace(
-        hour=floor_minutes // 60,
-        minute=floor_minutes % 60,
-        second=0,
-        microsecond=0,
-    )
-
-
-class RecordingClipBuilder:
+class RecordingClipBuilder(FfmpegBuilderExecutorMixin):
     """
     Assembles one monitor's MPEG-TS segments into rolling MP4 clips.
 
@@ -38,6 +28,21 @@ class RecordingClipBuilder:
     ------------------------------------------------
     TIME:  ``window_minutes`` elapsed since the clip window started.
     SIZE:  accumulated raw segment bytes exceed ``max_size_mb`` MB.
+
+    Wall-clock boundary enforcement (mandatory requirement)
+    --------------------------------------------------------
+    A clip must never straddle an hour boundary. Grouping-by-start alone
+    (``floor_to_window`` on ``segment.started_at``) is not enough: a segment
+    that starts before ``:00:00`` but finalizes after it used to be counted
+    whole into the closing window, dragging its content up to one
+    ``SEGMENT_DURATION`` past the hour. Whenever a finalized segment's own
+    span crosses a boundary, ``on_segment_finalized``/``recover_from_segments``
+    now split its CONTENT across both windows using FFmpeg concat-demuxer
+    ``inpoint``/``outpoint`` directives (the same technique
+    ``FFmpegTrimAdapter`` already uses for event clips, no re-encode) — the
+    closing window's clip ends exactly at the boundary and the new window's
+    clip begins exactly there, even though the underlying segment FILE isn't
+    cut at that instant (the raw FFmpeg segmenter is untouched).
 
     Output naming: ``{YYYY-MM-DD_HH-MM-SS}_m{monitor_index}.mp4``
 
@@ -62,7 +67,7 @@ class RecordingClipBuilder:
         monitor_index: int,
         window_minutes: int = 60,
         max_size_mb: int = 3072,
-        on_clip_ready: "Callable[[Path], None] | None" = None,
+        on_clip_ready: "Callable[[Path, str, datetime], None] | None" = None,
         codec: str = "h264",
     ) -> None:
         self._output_dir    = output_dir
@@ -75,13 +80,14 @@ class RecordingClipBuilder:
         self._lock        = threading.Lock()
         self._windows: dict[datetime, list[Segment]]  = defaultdict(list)
         self._win_sizes: dict[datetime, int]           = defaultdict(int)
+        # Real wall-clock start of each window's earliest segment — first-seen-wins,
+        # used for the output FILENAME. `ws` (the floor boundary) stays the internal
+        # bucket/grouping key so multi-monitor combining is unaffected.
+        self._win_real_start: dict[datetime, datetime] = {}
 
-        self._proc_lock: threading.Lock = threading.Lock()
-        self._active_proc: "subprocess.Popen | None" = None  # tracked for fast shutdown
-
-        self._executor = ThreadPoolExecutor(
-            max_workers=1,
+        self._init_ffmpeg_executor(
             thread_name_prefix=f"clip-m{monitor_index}",
+            log_label=f"[clip m{monitor_index}]",
         )
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -99,7 +105,16 @@ class RecordingClipBuilder:
         seg_size = segment.size_bytes
 
         with self._lock:
-            ws = _floor_to_window(segment.started_at, self._window_mins)
+            ws = floor_to_window(segment.started_at, self._window_mins)
+            boundary = ws + timedelta(minutes=self._window_mins)
+
+            if segment.ended_at > boundary:
+                # Mandatory hour-alignment: this segment's own span crosses the
+                # boundary (e.g. started 16:59:33, finalized 17:04:33 with
+                # SEGMENT_DURATION=300) — split it across both windows instead
+                # of counting it whole into the one it started in.
+                self._close_straddling_segment_locked(ws, boundary, segment, seg_size)
+                return
 
             # Size-overflow: flush window early when adding this segment would
             # exceed the limit, then open a new window for the segment.
@@ -116,6 +131,11 @@ class RecordingClipBuilder:
                 self._flush_window_locked(ws)
                 ws = ws + timedelta(minutes=self._window_mins)
 
+            # First-seen-wins: must run AFTER the overflow reassignment above so a
+            # freshly-opened post-overflow bucket seeds from the segment that
+            # actually opened it, not the old bucket's real start.
+            self._win_real_start.setdefault(ws, segment.started_at)
+
             if segment.path not in {s.path for s in self._windows[ws]}:
                 self._windows[ws].append(segment)
                 self._windows[ws].sort(key=lambda s: s.started_at)
@@ -123,8 +143,14 @@ class RecordingClipBuilder:
 
             segs_snap = list(self._windows[ws])
             size_snap = self._win_sizes[ws]
+            real_start = self._win_real_start[ws]
+            # A window whose real_start was forced ahead of its earliest
+            # segment's own disk-start (only happens via a prior boundary
+            # split, below) needs that leading segment's front trimmed.
+            clip_start = real_start if real_start > segs_snap[0].started_at else None
 
-        output = self._window_output(ws)
+        window_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
+        output = self._window_output(real_start)
         logger.debug(
             "[clip m{}] Window {} — {} seg(s), {:.1f} MB raw → queuing build for {}",
             self._monitor_idx,
@@ -133,7 +159,56 @@ class RecordingClipBuilder:
             size_snap / 1_048_576,
             output.name,
         )
-        self._submit_build(segs_snap, output, size_snap)
+        self._submit_build(segs_snap, output, size_snap, window_key, real_start, clip_start=clip_start)
+
+    def _close_straddling_segment_locked(
+        self, ws: datetime, boundary: datetime, segment: Segment, seg_size: int,
+    ) -> None:
+        """A finalized segment's own span crosses ``boundary``: append it to its
+        native window ``ws`` (trimmed to end at ``boundary``) AND to the next
+        window (trimmed to start at ``boundary``), then submit both builds.
+        Must hold ``self._lock`` (called only from ``on_segment_finalized``).
+        """
+        if segment.path not in {s.path for s in self._windows[ws]}:
+            self._windows[ws].append(segment)
+            self._windows[ws].sort(key=lambda s: s.started_at)
+            self._win_sizes[ws] += seg_size
+
+        closing_segs = list(self._windows[ws])
+        closing_real_start = self._win_real_start.get(ws, closing_segs[0].started_at)
+        closing_size = self._win_sizes[ws]
+        closing_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
+        closing_output = self._window_output(closing_real_start)
+
+        # This window is done for good — time only moves forward, so no future
+        # segment can ever floor into it again (unlike an overflow re-open,
+        # which stays live for the rest of the current window).
+        self._windows.pop(ws, None)
+        self._win_sizes.pop(ws, None)
+        self._win_real_start.pop(ws, None)
+
+        new_ws = boundary  # floor_to_window(boundary, ...) == boundary exactly
+        self._win_real_start.setdefault(new_ws, boundary)
+        if segment.path not in {s.path for s in self._windows[new_ws]}:
+            self._windows[new_ws].append(segment)
+            self._win_sizes[new_ws] += seg_size
+        new_real_start = self._win_real_start[new_ws]
+        new_output = self._window_output(new_real_start)
+
+        logger.info(
+            "[clip m{}] Segment {} straddles {} — closing {} at cut, opening {} from cut.",
+            self._monitor_idx, segment.path.name, boundary.strftime("%H:%M:%S"),
+            closing_output.name, new_output.name,
+        )
+        self._submit_build(
+            closing_segs, closing_output, closing_size, closing_key, closing_real_start,
+            clip_end=boundary,
+        )
+        self._submit_build(
+            list(self._windows[new_ws]), new_output, self._win_sizes[new_ws],
+            new_ws.strftime("%Y-%m-%d_%H-%M-%S"), new_real_start,
+            clip_start=new_real_start,
+        )
 
     def recover_from_segments(self, all_segments: list[Segment]) -> None:
         """Startup recovery: group by window, ONE build per window.
@@ -141,16 +216,36 @@ class RecordingClipBuilder:
         Never call ``on_segment_finalized`` in a loop for recovery — that
         queues N redundant builds for the same output and the ``output.exists()``
         guard stops all but the first.  This method is the correct entry point.
+
+        Same wall-clock boundary enforcement as the live path: a segment whose
+        own span crosses a window boundary is bucketed into BOTH windows (its
+        tail also belongs to the next one), trimmed at build time below —
+        otherwise a historical straddling segment would reproduce the same
+        "clip runs past the hour" bug on recovery.
         """
         by_window: dict[datetime, list[Segment]] = defaultdict(list)
         for seg in all_segments:
-            ws = _floor_to_window(seg.started_at, self._window_mins)
+            ws = floor_to_window(seg.started_at, self._window_mins)
             by_window[ws].append(seg)
+            boundary = ws + timedelta(minutes=self._window_mins)
+            if seg.ended_at > boundary:
+                by_window[boundary].append(seg)
 
         queued = 0
         for ws in sorted(by_window):
             segs = sorted(by_window[ws], key=lambda s: s.started_at)
-            output = self._window_output(ws)
+            boundary = ws + timedelta(minutes=self._window_mins)
+            # max(): a window whose only content is a carried-over tail from a
+            # straddling segment (segs[0].started_at < ws) starts exactly at
+            # the boundary, not at that earlier segment's real disk-start.
+            default_real_start = max(ws, segs[0].started_at)
+            with self._lock:
+                self._win_real_start.setdefault(ws, default_real_start)
+                real_start = self._win_real_start[ws]
+            window_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
+            output = self._window_output(real_start)
+            clip_start = real_start if real_start > segs[0].started_at else None
+            clip_end = boundary if segs[-1].ended_at > boundary else None
 
             if output.exists():
                 logger.debug(
@@ -175,7 +270,10 @@ class RecordingClipBuilder:
                 "[clip m{}] Recovery: queuing {} — {} segment(s), {:.1f} MB raw",
                 self._monitor_idx, output.name, len(segs), total_size / 1_048_576,
             )
-            self._submit_build(segs, output, total_size)
+            self._submit_build(
+                segs, output, total_size, window_key, real_start,
+                clip_start=clip_start, clip_end=clip_end,
+            )
             queued += 1
 
         if queued:
@@ -189,21 +287,10 @@ class RecordingClipBuilder:
                 self._monitor_idx,
             )
 
-    def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        with self._proc_lock:
-            if self._active_proc is not None:
-                try:
-                    self._active_proc.kill()
-                except OSError:
-                    pass
-                self._active_proc = None
-        logger.info("[clip m{}] Executor shut down.", self._monitor_idx)
-
     # ── Private helpers ───────────────────────────────────────────────
 
-    def _window_output(self, ws: datetime) -> Path:
-        ts = ws.strftime("%Y-%m-%d_%H-%M-%S")
+    def _window_output(self, real_start: datetime) -> Path:
+        ts = real_start.strftime("%Y-%m-%d_%H-%M-%S")
         return self._output_dir / f"{ts}_m{self._monitor_idx}.mp4"
 
     def _flush_window_locked(self, ws: datetime) -> None:
@@ -211,21 +298,64 @@ class RecordingClipBuilder:
         segs = list(self._windows[ws])
         size = self._win_sizes[ws]
         if segs:
-            output = self._window_output(ws)
-            self._submit_build(segs, output, size)
+            real_start = self._win_real_start.get(ws, segs[0].started_at)
+            window_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
+            output = self._window_output(real_start)
+            self._submit_build(segs, output, size, window_key, real_start)
         self._windows.pop(ws, None)
         self._win_sizes.pop(ws, None)
+        self._win_real_start.pop(ws, None)
 
     def _submit_build(
-        self, segments: list[Segment], output: Path, raw_size: int
+        self,
+        segments: list[Segment],
+        output: Path,
+        raw_size: int,
+        window_key: str,
+        real_start: datetime,
+        clip_start: "datetime | None" = None,
+        clip_end: "datetime | None" = None,
     ) -> None:
         try:
-            self._executor.submit(self._build, list(segments), output, raw_size)
+            self._executor.submit(
+                self._build, list(segments), output, raw_size, window_key, real_start,
+                clip_start, clip_end,
+            )
         except RuntimeError:
             logger.debug("[clip m{}] Executor shut down; skipping build.", self._monitor_idx)
 
-    def _purge_stale_temps(self) -> None:
-        for stale in self._output_dir.glob("*.tmp.mp4"):
+    def _purge_stale_temps(
+        self, *, max_age_seconds: float | None = None, exclude: Path | None = None
+    ) -> None:
+        """Remove leftover ``*.tmp.mp4`` files belonging to THIS monitor.
+
+        ``_output_dir`` is shared across every monitor's builder (see
+        ``build_recording_backend`` in ``runtime/backend.py``), and a new
+        builder is constructed live on hot-plug (``_hot_add`` in ``main.py``)
+        — not only at cold startup. An unscoped glob here would delete
+        another monitor's in-flight ``.tmp.mp4`` the moment a second monitor
+        is plugged in mid-recording, so the glob is scoped to this monitor's
+        own filename suffix (``_window_output`` always appends ``_m{idx}``).
+
+        With ``max_age_seconds=None`` (startup/hot-plug path) every matching
+        tmp is removed unconditionally — safe because no build for THIS
+        monitor is running yet at construction time. Called with a threshold
+        from ``_build()`` it only sweeps tmps older than that (and skips
+        ``exclude``, the current build's own tmp), so a tmp orphaned by a
+        mid-write crash gets cleaned on the next segment cycle instead of
+        surviving until the next full app restart.
+        """
+        now = time.time()
+        for stale in self._output_dir.glob(f"*_m{self._monitor_idx}.tmp.mp4"):
+            if exclude is not None and stale == exclude:
+                continue
+            if max_age_seconds is not None:
+                try:
+                    age = now - stale.stat().st_mtime
+                except OSError:
+                    continue
+                if age < max_age_seconds:
+                    continue
             try:
                 stale.unlink()
                 logger.info("[clip m{}] Removed stale temp: {}", self._monitor_idx, stale.name)
@@ -237,8 +367,21 @@ class RecordingClipBuilder:
         segments: list[Segment],
         output: Path,
         raw_size_bytes: int,
+        window_key: str,
+        real_start: datetime,
+        clip_start: "datetime | None" = None,
+        clip_end: "datetime | None" = None,
     ) -> None:
-        """Concat segments → MP4.  Runs in single-worker executor (never concurrent)."""
+        """Concat segments → MP4.  Runs in single-worker executor (never concurrent).
+
+        ``clip_start``/``clip_end`` are only set when a segment straddles a
+        wall-clock window boundary (see ``_close_straddling_segment_locked``)
+        — they write FFmpeg concat-demuxer ``inpoint``/``outpoint`` directives
+        (same technique as ``FFmpegTrimAdapter._write_concat_file``, no
+        re-encode) so the straddling segment is cut exactly at the boundary
+        instead of being included whole. ``None`` (the common case) preserves
+        the existing whole-segment behaviour exactly.
+        """
         available = [s for s in segments if s.path.exists()]
         if not available:
             logger.warning(
@@ -251,13 +394,35 @@ class RecordingClipBuilder:
         tmp = output.with_suffix(".tmp.mp4")
         concat_file: Path | None = None
 
+        # Opportunistic sweep: a tmp orphaned by a mid-write crash (whole-app
+        # kill, not just ffmpeg) would otherwise survive until the next full
+        # restart's __init__ purge. 2h safely exceeds the 3600s build timeout
+        # below, and the single-worker executor guarantees no other build is
+        # ever in flight to be mistaken for stale.
+        self._purge_stale_temps(max_age_seconds=2 * 3600, exclude=tmp)
+
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".txt", delete=False, encoding="utf-8"
             ) as f:
                 concat_file = Path(f.name)
                 for seg in available:
-                    f.write(f"file '{seg.path.as_posix()}'\n")
+                    safe_path = seg.path.as_posix().replace("'", r"'\''")
+                    f.write(f"file '{safe_path}'\n")
+                    if clip_start is None and clip_end is None:
+                        continue
+                    seg_duration = seg.duration_seconds
+                    inpoint = max(
+                        0.0, ((clip_start - seg.started_at).total_seconds() if clip_start else 0.0)
+                    )
+                    outpoint = min(
+                        seg_duration,
+                        (clip_end - seg.started_at).total_seconds() if clip_end else seg_duration,
+                    )
+                    if inpoint > 0.1:
+                        f.write(f"inpoint {inpoint:.3f}\n")
+                    if outpoint < seg_duration - 0.1:
+                        f.write(f"outpoint {outpoint:.3f}\n")
 
             cmd = [
                 resolve_ffmpeg(),
@@ -280,26 +445,15 @@ class RecordingClipBuilder:
                 self._window_mins,
             )
 
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            assign_to_job(proc)
-            with self._proc_lock:
-                self._active_proc = proc
-            try:
-                _, stderr_bytes = proc.communicate(timeout=3600)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                raise
-            finally:
-                with self._proc_lock:
-                    self._active_proc = None
+            label = f"clip-m{self._monitor_idx}"
 
-            if proc.returncode == 0:
+            on_started, on_finished = self._process_tracking_callbacks()
+            result = run_batched_ffmpeg(
+                cmd, label=label, timeout=3600,
+                on_started=on_started, on_finished=on_finished,
+            )
+
+            if result.returncode == 0:
                 tmp.replace(output)
                 size_mb = output.stat().st_size / 1_048_576
                 logger.info(
@@ -309,7 +463,7 @@ class RecordingClipBuilder:
                 # Notify CombinedClipBuilder (or any listener) that this clip is ready.
                 if self._on_clip_ready is not None:
                     try:
-                        self._on_clip_ready(output)
+                        self._on_clip_ready(output, window_key, real_start)
                     except Exception:
                         logger.exception("[clip m{}] on_clip_ready callback raised.", self._monitor_idx)
                 if output.stat().st_size > self._max_bytes:
@@ -323,10 +477,10 @@ class RecordingClipBuilder:
                     )
             else:
                 tmp.unlink(missing_ok=True)
-                err = (stderr_bytes or b"").decode("utf-8", errors="replace")[-2000:]
+                err = (result.stderr or b"").decode("utf-8", errors="replace")[-2000:]
                 logger.error(
                     "[clip m{}] ✗ {} (rc={}):\n{}",
-                    self._monitor_idx, output.name, proc.returncode, err,
+                    self._monitor_idx, output.name, result.returncode, err,
                 )
 
         except subprocess.TimeoutExpired:
@@ -352,7 +506,7 @@ class HourlyRecordingBuilder(RecordingClipBuilder):
         monitor_index: int | None = None,
         window_minutes: int = 60,
         max_size_mb: int = 3072,
-        on_clip_ready: "Callable[[Path], None] | None" = None,
+        on_clip_ready: "Callable[[Path, str, datetime], None] | None" = None,
         codec: str = "h264",
     ) -> None:
         super().__init__(

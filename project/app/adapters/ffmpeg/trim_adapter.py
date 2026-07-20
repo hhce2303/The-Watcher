@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +15,9 @@ from app.adapters.ffmpeg.encoder_selector import (
     tag_for_encoder,
 )
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
+from app.adapters.ffmpeg.process_guard import run_batched_ffmpeg
 from app.core.ports.clip_port import ClipPort
+from app.core.ports.segment_compiler_port import SegmentCompilerPort
 from app.core.recording_service.models import MonitorInfo, Segment
 
 
@@ -42,8 +43,17 @@ class FFmpegTrimAdapter(ClipPort):
     recorder watchdog.  Segments are read-only; no interference with recording.
     """
 
-    def __init__(self, codec: str = "h264") -> None:
+    def __init__(
+        self,
+        codec: str = "h264",
+        segment_compiler: Optional[SegmentCompilerPort] = None,
+    ) -> None:
         self._codec = codec
+        # Track R2 M1: when set (see make_clip_adapter — ENGINE_READY-gated),
+        # the single-monitor path attempts this engine first, falling back to
+        # the FFmpeg concat/-c copy path below on ANY exception. None forces
+        # the legacy path unconditionally (the CLIP_ENGINE=ffmpeg rollback).
+        self._segment_compiler = segment_compiler
 
     def build_clip(
         self,
@@ -70,6 +80,50 @@ class FFmpegTrimAdapter(ClipPort):
     # ------------------------------------------------------------------
 
     def _build_single(
+        self,
+        segments: List[Segment],
+        output_path: Path,
+        clip_start: Optional[datetime] = None,
+        clip_end: Optional[datetime] = None,
+    ) -> Path:
+        if self._segment_compiler is not None:
+            try:
+                return self._build_single_rust(segments, output_path, clip_start, clip_end)
+            except Exception as exc:  # noqa: BLE001 — any Rust failure falls back to FFmpeg
+                logger.warning(
+                    "[clipengine] Rust clip build failed ({}) — falling back to FFmpeg.", exc
+                )
+        return self._build_single_ffmpeg(segments, output_path, clip_start, clip_end)
+
+    def _build_single_rust(
+        self,
+        segments: List[Segment],
+        output_path: Path,
+        clip_start: Optional[datetime] = None,
+        clip_end: Optional[datetime] = None,
+    ) -> Path:
+        """Route the single-monitor window through the Rust engine — byte-identical
+        work to the FFmpeg path below (lossless stream-copy concat + window), per
+        Track R2 M1. Raises on any missing segment or engine error; the caller
+        (``_build_single``) catches and falls back to FFmpeg in the same call.
+        """
+        sources = [seg.path for seg in segments]
+        missing = [s for s in sources if not s.exists()]
+        if missing:
+            raise FileNotFoundError(f"{len(missing)} segment(s) missing — Rust engine requires all present.")
+
+        in_point_s: Optional[float] = None
+        out_point_s: Optional[float] = None
+        if clip_start is not None:
+            in_point_s = max(0.0, (clip_start - segments[0].started_at).total_seconds())
+        if clip_end is not None:
+            out_point_s = (clip_end - segments[0].started_at).total_seconds()
+
+        result = self._segment_compiler.compile(sources, output_path, in_point_s, out_point_s)
+        self._log_clip(output_path)
+        return result
+
+    def _build_single_ffmpeg(
         self,
         segments: List[Segment],
         output_path: Path,
@@ -312,13 +366,7 @@ class FFmpegTrimAdapter(ClipPort):
 
     def _run(self, cmd: List[str], output_path: Path) -> None:
         logger.info("FFmpeg clip: {} → {}", cmd[-2] if len(cmd) > 1 else "?", output_path.name)
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=900,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        result = run_batched_ffmpeg(cmd, label="clip-build", timeout=900)
         if result.returncode != 0:
             stderr = result.stderr.decode("utf-8", errors="replace")
             logger.error(

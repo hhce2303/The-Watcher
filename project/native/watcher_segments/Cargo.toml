@@ -1,8 +1,8 @@
 # watcher_segments — native segment-compilation engine (R-6, ADR-0006).
 #
 # Compiled to a Python extension module (.pyd) via PyO3 + maturin.
-# NOTE: versions below are intentionally loose; pin them when the lossless
-# TS→MP4 remux/concat/trim implementation lands and is validated.
+# The lossless TS→MP4 remux/concat/trim engine is implemented in src/lib.rs;
+# media-crate versions are pinned (`=`) for reproducible native builds.
 [package]
 name = "watcher_segments"
 version = "0.1.0"
@@ -19,9 +19,8 @@ crate-type = ["cdylib", "rlib"]
 pyo3 = { version = "0.22", features = ["extension-module"] }
 
 # Pure-Rust media crates (no external DLLs → clean PyInstaller bundle).
-# Uncomment + pin when implementing compile_clip():
-# mpeg2ts-reader = "0.16"   # MPEG-TS demux + keyframe/SPS-PPS detection (MIT/Apache)
-# muxide        = "0.2"     # MP4 stream-copy muxer with exact PTS/DTS    (MIT/Apache)
+mpeg2ts-reader = "=0.18.2"   # MPEG-TS demux + PES/keyframe detection (MIT/Apache)
+shiguredo_mp4  = "=2026.3.0" # Pure-Rust Sans-I/O MP4 mux (Encode/Decode)
 
 [profile.release]
 opt-level = 3

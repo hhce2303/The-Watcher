@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +8,7 @@ from loguru import logger
 
 from app.adapters.ffmpeg.encoder_selector import get_encoder, quality_flags, tag_for_encoder
 from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
+from app.adapters.ffmpeg.process_guard import run_batched_ffmpeg
 from app.core.ports.timestamp_port import TimestampPort
 
 # Windows font paths tried in priority order.
@@ -123,13 +123,7 @@ class FFmpegTimestampAdapter(TimestampPort):
                 "FFmpegTimestampAdapter cmd: {}",
                 " ".join(cmd),
             )
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                timeout=900,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            result = run_batched_ffmpeg(cmd, label="timestamp-burn", timeout=900)
             stderr_text = result.stderr.decode("utf-8", errors="replace")
             if result.returncode != 0:
                 logger.error(

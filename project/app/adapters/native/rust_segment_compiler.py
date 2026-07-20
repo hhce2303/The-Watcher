@@ -94,3 +94,33 @@ def make_segment_compiler(
     )
 
     return FFmpegSegmentCompilerAdapter(codec=codec)
+
+
+def make_clip_adapter(
+    segment_compiler: SegmentCompilerPort, clip_engine: str = "auto"
+) -> Optional[SegmentCompilerPort]:
+    """Return the engine FFmpegTrimAdapter's single-monitor path should attempt
+    for lossless clip assembly (Track R2 M1), or ``None`` to always use the
+    legacy FFmpeg concat/-c copy path.
+
+    Mirrors :func:`make_segment_compiler`'s ENGINE_READY gate but reuses the
+    ALREADY-constructed ``segment_compiler`` instance (one Rust engine per
+    process is enough — this only decides whether the clip port should route
+    through it), matching the app's single wiring point in ``runtime/backend.py``.
+
+    ``clip_engine="ffmpeg"`` always returns ``None`` (forces the legacy path —
+    the runtime rollback). ``"auto"``/``"rust"`` return ``segment_compiler``
+    only if it actually IS the Rust engine (i.e. ENGINE_READY was true when it
+    was constructed) — this function never constructs a second engine.
+    """
+    clip_engine = (clip_engine or "auto").lower()
+    if clip_engine == "ffmpeg":
+        return None
+    if isinstance(segment_compiler, RustSegmentCompilerAdapter):
+        return segment_compiler
+    if clip_engine == "rust":
+        logger.warning(
+            "[clipengine] CLIP_ENGINE=rust requested but the active segment_compiler "
+            "is not the Rust engine (ENGINE_READY gate) — clips will use FFmpeg."
+        )
+    return None

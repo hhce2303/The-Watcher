@@ -3,9 +3,12 @@
     Builds the The Watcher Windows executable (Milestone 8).
 
 .DESCRIPTION
-    1. Creates a clean build venv at C:\TW_Venv (comma-free path) to work
-       around a Qt/PyInstaller bug where QLibraryInfo.path() mis-parses the
-       PySide6 plugins directory when the venv path contains a comma.
+    1. Creates a clean build venv at C:\TW_Venv (comma-free path). This was
+       originally a workaround for a Qt/PyInstaller path-parsing bug; QML/
+       PySide6 are gone now (F3), but the repo path still contains a comma
+       ("SIG Systems, Inc"), and other PyInstaller hooks have shown similar
+       comma-sensitivity, so the clean-path venv/junction stays as a safe
+       default rather than re-introducing that risk.
     2. Creates a junction C:\TW_Build -> project root (also comma-free) so
        PyInstaller's pathex/spec work correctly.
     3. Runs PyInstaller with the spec file.
@@ -45,11 +48,7 @@ Write-Host "=== The Watcher Build ===" -ForegroundColor Cyan
 Write-Host "Project: $ProjectRoot"
 
 # ---------------------------------------------------------------------------
-# Step 1: Create a comma-free venv for PyInstaller
-# Qt's QLibraryInfo.path() breaks when the venv path contains a comma, which
-# causes the hook-PySide6.QtNetwork.py hook to raise:
-#   "Qt plugin directory '...' does not exist!"
-# Using a clean-path venv avoids this entirely.
+# Step 1: Create a comma-free venv for PyInstaller (see .DESCRIPTION above).
 # ---------------------------------------------------------------------------
 $CleanPip        = "$CleanVenv\Scripts\pip.exe"
 $CleanPyInstaller = "$CleanVenv\Scripts\pyinstaller.exe"
@@ -62,18 +61,54 @@ if ($NeedsVenvSetup) {
     Write-Host "Installing packages into clean venv..." -ForegroundColor Yellow
     & $CleanPip install --upgrade pip --quiet
     & $CleanPip install `
-        "PySide6==6.11.0" `
         "screeninfo==0.8.1" `
         "psutil==7.2.2" `
         "loguru==0.7.3" `
         "python-dotenv==1.2.2" `
         "pydantic==2.13.3" `
+        "websockets==16.0" `
         "pyinstaller==6.20.0" `
         "pyinstaller-hooks-contrib==2026.4" `
         --quiet
     Write-Host "Clean venv ready." -ForegroundColor Green
 } else {
     Write-Host "Using existing clean build venv at $CleanVenv" -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------------------
+# Step 1b: Build + install the native Rust segment engine into the clean venv.
+# OPTIONAL / non-fatal — the app falls back to the FFmpeg segment compiler when
+# the .pyd is absent (ENGINE_READY gate). Must run BEFORE PyInstaller so the
+# .pyd lands in site-packages and the spec's hiddenimport can bundle it.
+# ---------------------------------------------------------------------------
+$CleanPython = "$CleanVenv\Scripts\python.exe"
+$CrateDir    = Join-Path $ProjectRoot "native\watcher_segments"
+if (Get-Command cargo -ErrorAction SilentlyContinue) {
+    if (Test-Path $CrateDir) {
+        Write-Host "Building native Rust engine (watcher_segments)..." -ForegroundColor Cyan
+        & $CleanPip install --upgrade maturin --quiet
+        $WheelOut = Join-Path $env:TEMP "tw_build_wheels"
+        Push-Location $CrateDir
+        try {
+            # --interpreter (not `maturin develop`) so maturin targets THIS venv
+            # and does not autodetect an unrelated one.
+            & $CleanPython -m maturin build --release --interpreter $CleanPython --out $WheelOut
+            if ($LASTEXITCODE -eq 0) {
+                $Wheel = Get-ChildItem $WheelOut -Filter "watcher_segments-*.whl" -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime | Select-Object -Last 1
+                if ($Wheel) {
+                    & $CleanPip install --force-reinstall --no-deps $Wheel.FullName --quiet
+                    Write-Host "Native Rust engine installed into clean venv." -ForegroundColor Green
+                } else {
+                    Write-Warning "Native engine wheel not found after build — using FFmpeg fallback."
+                }
+            } else {
+                Write-Warning "Native engine build failed — the bundle will use the FFmpeg fallback."
+            }
+        } finally { Pop-Location }
+    }
+} else {
+    Write-Warning "Rust toolchain (cargo) not found — building without the native engine (FFmpeg fallback)."
 }
 
 # ---------------------------------------------------------------------------
