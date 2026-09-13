@@ -20,9 +20,9 @@ from app.infrastructure.config import get_settings
 
 
 def _find_mkcert() -> Path | None:
-    """Resolve mkcert.exe: bundled bin/ (frozen build) > PATH."""
+    """Resolve mkcert.exe: bundled bin/ (frozen build, same as ffmpeg_path.py) > PATH."""
     if getattr(sys, "frozen", False):
-        bundled = Path(sys.executable).parent / "bin" / "mkcert.exe"
+        bundled = Path(sys._MEIPASS) / "bin" / "mkcert.exe"  # type: ignore[attr-defined]
         if bundled.is_file():
             return bundled
     found = shutil.which("mkcert")
@@ -60,7 +60,21 @@ def _ensure_certificate(data_dir: Path) -> tuple[Path, Path] | None:
         print("  Install it with: winget install FiloSottile.mkcert", file=sys.stderr)
         return None
     data_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run([str(mkcert), "-install"], check=True, capture_output=True, text=True)
+    # mkcert (a Go binary) writes UTF-8 to stdout/stderr regardless of the
+    # console's codepage; without an explicit encoding, subprocess falls back
+    # to the locale default (cp1252 on most Windows installs), which raises
+    # UnicodeDecodeError in a background reader thread on any non-ASCII byte
+    # mkcert prints (e.g. its "✓"-style status glyphs) -- non-fatal, but it
+    # spews a confusing traceback into the same terminal the enrollment
+    # report is meant to print cleanly to.
+    subprocess.run(
+        [str(mkcert), "-install"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     subprocess.run(
         [
             str(mkcert),
@@ -71,6 +85,8 @@ def _ensure_certificate(data_dir: Path) -> tuple[Path, Path] | None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     _restrict_key_to_current_user(key)
     return cert, key

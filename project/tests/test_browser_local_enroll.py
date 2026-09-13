@@ -49,13 +49,17 @@ def test_upsert_env_var_creates_file_when_absent(tmp_path):
 def test_find_mkcert_prefers_bundled_binary(tmp_path, monkeypatch):
     import sys
 
-    fake_exe_dir = tmp_path / "dist"
-    (fake_exe_dir / "bin").mkdir(parents=True)
-    bundled = fake_exe_dir / "bin" / "mkcert.exe"
+    # PyInstaller's onedir contents-directory layout bundles binaries/ under
+    # _MEIPASS (dist/The Watcher/_internal/), not next to the .exe itself --
+    # see app/adapters/ffmpeg/ffmpeg_path.py, which resolves ffmpeg.exe the
+    # same way.
+    meipass_dir = tmp_path / "dist" / "The Watcher" / "_internal"
+    (meipass_dir / "bin").mkdir(parents=True)
+    bundled = meipass_dir / "bin" / "mkcert.exe"
     bundled.write_text("", encoding="utf-8")
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(fake_exe_dir / "The Watcher Enroll.exe"))
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass_dir), raising=False)
 
     assert _find_mkcert() == bundled
 
