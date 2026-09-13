@@ -92,7 +92,7 @@ def _make_adapter(tmp_path: Path) -> tuple[BrowserLocalAdapter, Ed25519PrivateKe
         browser_local_issuer="daily.sig.systems",
         browser_local_audience="the-watcher-local",
         browser_local_issuer_kid="watcher-ed25519-test",
-        browser_local_site_id=23,
+        browser_local_station_id=23,
         browser_local_cert_file=str(cert),
         browser_local_key_file=str(key),
         browser_local_issuer_public_key_file=str(issuer_public),
@@ -133,7 +133,7 @@ def _assertion(
             "aud": "the-watcher-local",
             "sub": "42",
             "device_id": adapter.enrollment_payload["device_id"],
-            "site_id": 23,
+            "station_id": 23,
             "scope": ["recordings:read", "preview:read"],
             "nonce": "n" * 32,
             "jti": jti,
@@ -196,7 +196,7 @@ def test_browser_local_tls_csp_loopback_and_range(tmp_path: Path) -> None:
         adapter.stop()
 
 
-def test_assertion_is_single_use_and_bound_to_device_and_site(tmp_path: Path) -> None:
+def test_assertion_is_single_use_and_bound_to_device_and_station(tmp_path: Path) -> None:
     adapter, issuer_key, _clip = _make_adapter(tmp_path)
     assertion = _assertion(adapter, issuer_key)
     assert adapter._sessions.open_session(assertion).subject == "42"  # noqa: SLF001

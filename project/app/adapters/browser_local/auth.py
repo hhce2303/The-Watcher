@@ -24,7 +24,7 @@ class BrowserSession:
     token: str
     subject: str
     device_id: str
-    site_id: int
+    station_id: int
     expires_at: float
 
 
@@ -47,13 +47,13 @@ class BrowserSessionManager:
         issuer: str,
         audience: str,
         issuer_kid: str,
-        site_id: int,
+        station_id: int,
         issuer_public_key_file: str,
         session_ttl_seconds: int = 300,
         capability_ttl_seconds: int = 30,
     ) -> None:
-        if site_id <= 0:
-            raise ValueError("BROWSER_LOCAL_SITE_ID must be a positive enrolled site id")
+        if station_id <= 0:
+            raise ValueError("BROWSER_LOCAL_STATION_ID must be a positive enrolled station id")
         if not issuer_kid:
             raise ValueError("BROWSER_LOCAL_ISSUER_KID is required")
         key_path = Path(issuer_public_key_file)
@@ -63,7 +63,7 @@ class BrowserSessionManager:
         self._issuer = issuer
         self._audience = audience
         self._issuer_kid = issuer_kid
-        self._site_id = site_id
+        self._station_id = station_id
         self._public_key = key_path.read_text(encoding="utf-8")
         self._session_ttl = session_ttl_seconds
         self._capability_ttl = capability_ttl_seconds
@@ -97,7 +97,7 @@ class BrowserSessionManager:
                 algorithms=["EdDSA"],
                 issuer=self._issuer,
                 audience=self._audience,
-                options={"require": ["exp", "iat", "nbf", "jti", "sub", "device_id", "site_id", "nonce"]},
+                options={"require": ["exp", "iat", "nbf", "jti", "sub", "device_id", "station_id", "nonce"]},
             )
         except jwt.PyJWTError as exc:
             raise AuthenticationError("assertion rejected") from exc
@@ -105,11 +105,11 @@ class BrowserSessionManager:
         if claims.get("device_id") != self._identity.device_id:
             raise AuthenticationError("assertion device mismatch")
         try:
-            claim_site = int(claims["site_id"])
+            claim_station = int(claims["station_id"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise AuthenticationError("assertion site invalid") from exc
-        if claim_site != self._site_id:
-            raise AuthenticationError("assertion site mismatch")
+            raise AuthenticationError("assertion station invalid") from exc
+        if claim_station != self._station_id:
+            raise AuthenticationError("assertion station mismatch")
         scopes = claims.get("scope", [])
         scope_set = set(scopes.split()) if isinstance(scopes, str) else set(scopes)
         if not {"recordings:read", "preview:read"}.issubset(scope_set):
@@ -129,7 +129,7 @@ class BrowserSessionManager:
                 token=token,
                 subject=str(claims["sub"]),
                 device_id=self._identity.device_id,
-                site_id=self._site_id,
+                station_id=self._station_id,
                 expires_at=now + self._session_ttl,
             )
             self._sessions[token] = session

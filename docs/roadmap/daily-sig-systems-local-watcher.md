@@ -39,7 +39,7 @@ del padre: `frame-src https://localhost:8765`.
   `device_id` y clave pública.
 - [x] `Start-TheWatcher.ps1 -SetupBrowserLocalTls` crea un certificado mkcert
   para `localhost`, `127.0.0.1` y `::1`, fuera del repositorio.
-- [x] Assertions EdDSA con validación de issuer, audience, dispositivo, sitio,
+- [x] Assertions EdDSA con validación de issuer, audience, dispositivo, estación,
   scopes, tiempo, `jti` de un uso; sesión RAM 5 min y capabilities 30 s.
 - [x] CSP `frame-ancestors https://daily.sig.systems`, sin X-Frame-Options,
   `Referrer-Policy: no-referrer`, Range para MP4 y logs con sujeto seudonimizado.
@@ -52,14 +52,14 @@ BROWSER_LOCAL_PARENT_ORIGIN=https://daily.sig.systems
 BROWSER_LOCAL_ISSUER=daily.sig.systems
 BROWSER_LOCAL_AUDIENCE=the-watcher-local
 BROWSER_LOCAL_ISSUER_KID=watcher-ed25519-2026-01
-BROWSER_LOCAL_SITE_ID=<site id enrolado>
+BROWSER_LOCAL_STATION_ID=<station id enrolado>
 BROWSER_LOCAL_CERT_FILE=%LOCALAPPDATA%\The Watcher\browser_local\localhost.pem
 BROWSER_LOCAL_KEY_FILE=%LOCALAPPDATA%\The Watcher\browser_local\localhost-key.pem
 BROWSER_LOCAL_ISSUER_PUBLIC_KEY_FILE=%LOCALAPPDATA%\The Watcher\browser_local\daily-issuer-public.pem
 ```
 
 La clave pública del emisor puede distribuirse; su privada se queda sólo como
-secreto de la Edge Function. Si falta certificado, key, sitio o clave pública,
+secreto de la Edge Function. Si falta certificado, key, estación o clave pública,
 el listener falla cerrado y la grabación sigue funcionando.
 
 ## Fase 2 — Daily SIG Systems (implementada en el repo hermano)
@@ -72,7 +72,7 @@ el listener falla cerrado y la grabación sigue funcionando.
   60 s con clave privada de secreto y audita sin token/capability.
 - [x] `WatcherPage` bajo Operación con feature flag, iframe, estados de
   daemon/certificado/enrolamiento y puente `postMessage` de origen exacto.
-- [x] Panel mínimo de admin/lead para enrolar, asignar sitio, activar y revocar.
+- [x] Panel mínimo de admin/lead para enrolar, asignar estación, activar y revocar.
 - [x] Pruebas Vitest del parser de mensajes y nonce.
 
 Pendiente de la persona/equipo que despliega Daily:
@@ -91,7 +91,7 @@ Pendiente de la persona/equipo que despliega Daily:
    `{type:'watcher:challenge', device_id, nonce}` al iframe local.
 3. El hijo pide al daemon firmar el nonce y devuelve `watcher:proof`.
 4. La Edge Function verifica el proof contra la clave pública enrolada y emite
-   JWT con `iss`, `aud=the-watcher-local`, `sub`, `device_id`, `site_id`,
+   JWT con `iss`, `aud=the-watcher-local`, `sub`, `device_id`, `station_id`,
    `scope`, `nonce`, `jti`, `iat`, `nbf`, `exp` (60 s).
 5. Daily manda `{type:'watcher:session', assertion}` con target local exacto.
    La UI abre WSS, manda assertion como primer mensaje y renueva a los 4 min.

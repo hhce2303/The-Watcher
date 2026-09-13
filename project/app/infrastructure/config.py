@@ -217,9 +217,9 @@ class Settings:
     # Pin the signing-key id as well as its public key so an unexpected key
     # rotation cannot silently become trusted by a local daemon.
     browser_local_issuer_kid: str = os.getenv("BROWSER_LOCAL_ISSUER_KID", "")
-    # A device is enrolled against exactly one SIG site. Zero means unconfigured
+    # A device is enrolled against exactly one Daily workstation. Zero means unconfigured
     # and fails closed when the browser adapter is enabled.
-    browser_local_site_id: int = int(os.getenv("BROWSER_LOCAL_SITE_ID", "0"))
+    browser_local_station_id: int = int(os.getenv("BROWSER_LOCAL_STATION_ID", "0"))
     browser_local_cert_file: str = os.getenv("BROWSER_LOCAL_CERT_FILE", "")
     browser_local_key_file: str = os.getenv("BROWSER_LOCAL_KEY_FILE", "")
     browser_local_issuer_public_key_file: str = os.getenv(

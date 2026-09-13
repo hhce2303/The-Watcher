@@ -40,7 +40,7 @@ class BrowserLocalAdapter:
             issuer=settings.browser_local_issuer,
             audience=settings.browser_local_audience,
             issuer_kid=settings.browser_local_issuer_kid,
-            site_id=settings.browser_local_site_id,
+            station_id=settings.browser_local_station_id,
             issuer_public_key_file=settings.browser_local_issuer_public_key_file,
         )
         self._loop: asyncio.AbstractEventLoop | None = None
