@@ -45,7 +45,7 @@ _ENV_EXAMPLE  = str(Path(SPECPATH).parent / ".env.example")
 #
 # QML/PySide6 are gone (F3) — this bundle is the headless daemon/sidecar only.
 # The React/Tauri UI is a separate app that connects over the named pipe; see
-# project/docs/migration/reference-target-architecture.md. Packaging that
+# docs/migration/reference-target-architecture.md. Packaging that
 # Tauri UI (and wiring this exe as its externalBin sidecar) is future work —
 # scope was "dev + purge" for this migration pass.
 # ---------------------------------------------------------------------------

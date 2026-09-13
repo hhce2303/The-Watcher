@@ -3,7 +3,7 @@
 Always-on screen recorder with pre/post event capture. Built with a Python + FFmpeg headless
 backend (Hexagonal / Ports & Adapters) and a **Tauri 2.0 + React** UI talking to it over an
 authenticated named pipe. PySide6/QML has been fully removed (F3, 2026-07-06) — see
-[`docs/migration/`](docs/migration/README.md) for the migration history.
+[`docs/migration/`](../docs/migration/README.md) for the migration history.
 
 ---
 
@@ -45,7 +45,7 @@ set via the first-run role wizard or an IT-PIN-gated role change — not via `.e
 
 The Operator restart watchdog (Scheduled Task, `app/infrastructure/scheduled_task.py`) can't be
 unit-tested — see
-[`docs/operator-policy-manual-checklist.md`](docs/operator-policy-manual-checklist.md) for the
+[`docs/operator-policy-manual-checklist.md`](../docs/operator-policy-manual-checklist.md) for the
 manual verification pass to run on a real Windows operator station before deploying.
 
 ### Request flow (IT ↔ Supervisor)
@@ -140,8 +140,8 @@ project/
 
 The UI is **Tauri 2.0 + React**, talking to the headless Python backend over an authenticated
 named pipe (`\\.\pipe\TheWatcher.<username>`, ADR-0011). QML/PySide6 were removed in full during
-F3 (2026-07-06); see [`docs/migration/`](docs/migration/README.md) for the rationale (ADR-0008)
-and [`docs/migration/reference-target-architecture.md`](docs/migration/reference-target-architecture.md)
+F3 (2026-07-06); see [`docs/migration/`](../docs/migration/README.md) for the rationale (ADR-0008)
+and [`docs/migration/reference-target-architecture.md`](../docs/migration/reference-target-architecture.md)
 for the current contract.
 
 ### `core/api` — the single entry port
@@ -324,7 +324,7 @@ Installs to `%LOCALAPPDATA%\The Watcher`. Optionally enables auto-start at Windo
 The editing tab is being designed with seams toward a future YOLO-based event-detection +
 analytics pipeline (decoupled inference, `DetectorPort` / `EventStorePort`, event sidecars,
 timeline markers — Frigate-style). Goals, traceability matrix, ADRs and the phased roadmap live in
-[`docs/editing/`](docs/editing/) (start with [`docs/editing/roadmap.md`](docs/editing/roadmap.md)).
+[`docs/architecture/`](../docs/architecture/) (start with [`docs/architecture/roadmap.md`](../docs/architecture/roadmap.md)).
 
 ---
 
