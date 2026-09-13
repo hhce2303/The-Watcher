@@ -165,6 +165,13 @@ def test_browser_local_tls_csp_loopback_and_preview_only(tmp_path: Path) -> None
             assert response.headers["Referrer-Policy"] == "no-referrer"
             assert "X-Frame-Options" not in response.headers
 
+        with _open(f"{base}/embed") as response:
+            embed = response.read().decode("utf-8")
+        assert "The Watcher" not in embed
+        assert "Grabaciones" not in embed
+        assert "Preview en vivo" not in embed
+        assert 'id="monitors"' in embed
+
         with pytest.raises(urllib.error.HTTPError) as denied:
             _open(f"{base}/api/v1/clips")
         assert denied.value.code == 404

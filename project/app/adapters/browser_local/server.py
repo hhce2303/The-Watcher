@@ -224,10 +224,7 @@ class BrowserLocalAdapter:
     async def _embed(self, _request: web.Request) -> web.Response:
         parent = html.escape(self._settings.browser_local_parent_origin, quote=True)
         return web.Response(
-            text=_EMBED_HTML.replace("__PARENT_ORIGIN__", parent).replace(
-                '<section><h2>Grabaciones</h2><div class="content"><ul id="clips"></ul><video id="player" controls playsinline></video></div></section>',
-                "",
-            ),
+            text=_PREVIEW_EMBED_HTML.replace("__PARENT_ORIGIN__", parent),
             content_type="text/html",
             charset="utf-8",
         )
@@ -373,7 +370,9 @@ _EMBED_HTML = """<!doctype html>
 <html lang=\"es\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>The Watcher</title><link rel=\"stylesheet\" href=\"/embed.css\"></head>
 <body data-parent-origin='__PARENT_ORIGIN__'><main><header><h1>The Watcher</h1><p id=\"status\">Conectando con SIG Daily…</p></header><section><h2>Preview en vivo</h2><div id=\"monitors\" class=\"grid\"></div></section><section><h2>Grabaciones</h2><div class=\"content\"><ul id=\"clips\"></ul><video id=\"player\" controls playsinline></video></div></section></main><script src=\"/embed.js\"></script></body></html>"""
 
-_EMBED_CSS = """*{box-sizing:border-box}body{margin:0;background:#101827;color:#e5e7eb;font:14px system-ui,sans-serif}main{padding:16px}h1,h2,p{margin:0}header{margin-bottom:18px}h1{font-size:20px}h2{font-size:16px;margin:20px 0 8px}#status{color:#9ca3af;margin-top:4px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.tile,.content{background:#182234;border:1px solid #30415d;border-radius:8px;padding:10px}.tile img{display:block;width:100%;margin-top:6px;background:#090d15}.content{display:grid;grid-template-columns:minmax(180px,1fr) minmax(320px,2fr);gap:12px}ul{list-style:none;margin:0;padding:0;max-height:380px;overflow:auto}button{width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid #30415d;color:inherit;padding:9px;cursor:pointer}button:hover{background:#263750}video{width:100%;max-height:420px;background:#000}@media(max-width:640px){.content{grid-template-columns:1fr}}"""
+_PREVIEW_EMBED_HTML = """<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Preview de monitores</title><link rel="stylesheet" href="/embed.css"></head><body data-parent-origin='__PARENT_ORIGIN__'><main><p id="status" role="status" aria-live="polite"></p><div id="monitors" class="grid" aria-label="Previews de monitores"></div></main><script src="/embed.js"></script></body></html>"""
+
+_EMBED_CSS = """*{box-sizing:border-box}body{margin:0;background:#101827;color:#e5e7eb;font:14px system-ui,sans-serif}main{padding:10px}#status{margin:0 0 10px;color:#fbbf24}#status:empty{display:none}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}.tile{background:#182234;border:1px solid #30415d;border-radius:8px;padding:10px;overflow:hidden}.tile strong{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tile img{display:block;width:100%;margin-top:8px;background:#090d15;border-radius:4px;aspect-ratio:16/9;object-fit:contain}"""
 
 _EMBED_JS = """(() => {
   const parentOrigin = document.body.dataset.parentOrigin;
@@ -395,7 +394,7 @@ _EMBED_JS = """(() => {
     const monitorData = await api('/api/v1/monitors');
     monitors.replaceChildren(...monitorData.monitors.map((monitor) => {
       const tile = document.createElement('article'); tile.className = 'tile';
-      const label = document.createElement('strong'); label.textContent = `${monitor.name} (${monitor.resolution})`;
+      const label = document.createElement('strong'); label.textContent = monitor.name;
       const image = document.createElement('img'); image.alt = label.textContent; image.src = monitor.preview_url;
       tile.append(label, image); return tile;
     }));
@@ -412,7 +411,7 @@ _EMBED_JS = """(() => {
     ws.onmessage = async (event) => {
       const message = JSON.parse(event.data);
       if (message.type === 'authenticated') {
-        session = message.session; setStatus('Conectado'); await render();
+        session = message.session; await render();
         clearInterval(refreshTimer); refreshTimer = setInterval(render, 5000);
         clearTimeout(refreshTimeout); refreshTimeout = setTimeout(() => window.parent.postMessage({type: 'watcher:refresh_required'}, parentOrigin), 240000);
       }
