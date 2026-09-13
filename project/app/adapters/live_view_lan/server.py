@@ -11,6 +11,8 @@ import json
 import ssl
 import threading
 import time
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +52,8 @@ class LiveViewLanAdapter(LiveViewPort):
         self._running = False
         self._viewers = 0
         self._viewer_lock = threading.Lock()
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
 
     @property
     def enrollment_payload(self) -> dict[str, str]:
@@ -70,7 +74,10 @@ class LiveViewLanAdapter(LiveViewPort):
         self._thread = threading.Thread(target=self._run, name="live-view-lan", daemon=True)
         self._thread.start()
         self._ready.wait(timeout=8)
-        return self._start_error is None and self._running
+        started = self._start_error is None and self._running
+        if started:
+            self._start_heartbeat()
+        return started
 
     def stop(self) -> None:
         if self._loop is not None and self._stop_event is not None:
@@ -78,6 +85,10 @@ class LiveViewLanAdapter(LiveViewPort):
         if self._thread is not None:
             self._thread.join(timeout=5)
         self._thread = None
+        self._heartbeat_stop.set()
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=5)
+        self._heartbeat_thread = None
         self._running = False
 
     def _validate(self) -> None:
@@ -125,6 +136,58 @@ class LiveViewLanAdapter(LiveViewPort):
         await self._stop_event.wait()
         await self._runner.cleanup()
 
+    def _start_heartbeat(self) -> None:
+        if not self._settings.live_view_heartbeat_url:
+            logger.warning("[live-view] heartbeat disabled: LIVE_VIEW_HEARTBEAT_URL is not configured")
+            return
+        self._heartbeat_stop.clear()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, name="live-view-heartbeat", daemon=True
+        )
+        self._heartbeat_thread.start()
+
+    def _heartbeat_loop(self) -> None:
+        interval = max(10, self._settings.live_view_heartbeat_seconds)
+        while not self._heartbeat_stop.is_set():
+            self._send_heartbeat()
+            self._heartbeat_stop.wait(interval)
+
+    def _send_heartbeat(self) -> None:
+        try:
+            monitors = tuple(sorted(monitor.index for monitor in self._api.recording.get_monitors()))
+            recording_state = "recording" if any(
+                (self._settings.segment_dir / f"m{index}" / "preview.jpg").is_file()
+                for index in monitors
+            ) else "starting"
+            health = "ok" if monitors else "degraded"
+            timestamp = int(time.time())
+            payload = {
+                "device_id": self._identity.device_id,
+                "timestamp": timestamp,
+                "live_origin": self._settings.live_view_origin,
+                "recording_state": recording_state,
+                "health": health,
+                "monitor_indexes": list(monitors),
+                "signature": self._identity.sign_live_heartbeat(
+                    timestamp=timestamp,
+                    live_origin=self._settings.live_view_origin,
+                    recording_state=recording_state,
+                    health=health,
+                    monitors=monitors,
+                ),
+            }
+            request = Request(
+                self._settings.live_view_heartbeat_url,
+                data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Cache-Control": "no-store"},
+                method="POST",
+            )
+            with urlopen(request, timeout=5) as response:  # noqa: S310 -- configured HTTPS endpoint
+                if response.status != 200:
+                    raise OSError(f"unexpected status {response.status}")
+        except (OSError, URLError, ValueError) as exc:
+            logger.warning("[live-view] heartbeat failed: {}", exc)
+
     @web.middleware
     async def _headers(self, _request: web.Request, handler):
         response = await handler(_request)
@@ -168,6 +231,8 @@ class LiveViewLanAdapter(LiveViewPort):
         session = self._bearer(request)
         monitors = []
         for monitor in self._api.recording.get_monitors():
+            if session.monitor_index != monitor.index:
+                continue
             path = self._settings.segment_dir / f"m{monitor.index}" / "preview.jpg"
             if path.is_file():
                 cap = self._sessions.issue_capability(session, path, "preview")

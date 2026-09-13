@@ -338,6 +338,11 @@ def _build_browser_local_adapter(
     """
     if user_config.role != OPERATOR or not settings.browser_local_enabled:
         return None
+    try:
+        return BrowserLocalAdapter(settings, api)
+    except Exception as exc:  # noqa: BLE001 -- recording must survive a bad browser configuration
+        logger.error("[browser-local] unavailable: {}", exc)
+        return None
 
 
 def _build_live_view_adapter(
@@ -351,13 +356,6 @@ def _build_live_view_adapter(
     except Exception as exc:  # noqa: BLE001 -- never sacrifice recording for live view
         logger.error("[live-view] unavailable: {}", exc)
         return None
-    try:
-        return BrowserLocalAdapter(settings, api)
-    except Exception as exc:  # noqa: BLE001 -- recording must survive a bad browser configuration
-        logger.error("[browser-local] unavailable: {}", exc)
-        return None
-
-
 def _start_recording_services(
     backend: RecordingBackend,
     user_config: UserConfig,

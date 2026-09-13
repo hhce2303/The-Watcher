@@ -25,6 +25,7 @@ class BrowserSession:
     subject: str
     device_id: str
     station_id: int
+    monitor_index: int | None
     expires_at: float
 
 
@@ -118,6 +119,12 @@ class BrowserSessionManager:
         # broader scope is rejected rather than granting future route access.
         if scope_set != {self._required_scope}:
             raise AuthenticationError("assertion scope invalid")
+        monitor_index: int | None = None
+        if self._required_scope == "live:read":
+            raw_monitor = claims.get("monitor_index")
+            if not isinstance(raw_monitor, int) or raw_monitor < 0:
+                raise AuthenticationError("assertion monitor invalid")
+            monitor_index = raw_monitor
 
         now = time.monotonic()
         jti = str(claims["jti"])
@@ -134,6 +141,7 @@ class BrowserSessionManager:
                 subject=str(claims["sub"]),
                 device_id=self._identity.device_id,
                 station_id=self._station_id,
+                monitor_index=monitor_index,
                 expires_at=now + self._session_ttl,
             )
             self._sessions[token] = session

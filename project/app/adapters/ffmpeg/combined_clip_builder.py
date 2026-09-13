@@ -287,11 +287,27 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
             logger.info("[combined] Recovery: no per-monitor clips found.")
             return
 
-        # The newest window may still be recording (its per-monitor clips will
-        # keep growing). Skip it so we don't freeze a partial combine — the live
-        # path combines it once the next hour starts. Seed internal state with
-        # every window so that handoff works.
-        newest = max(windows)
+        # A window may still be recording (its per-monitor clips will keep
+        # growing) ONLY if it is the window the wall clock is in RIGHT NOW —
+        # a live process could still append segments to it. Any older window
+        # is definitively closed, whether or not a newer window's clip has
+        # appeared on disk yet: relying on "is this the max window found on
+        # disk" (as this used to) means a session that exits before a second
+        # window's raw clip is ever written (any run shorter than
+        # window_minutes, e.g. the sidecar topology that dies with the app,
+        # or a daemon restarted before the hour rolls over) leaves its last
+        # window permanently mistaken for "in progress" — no future recover()
+        # call would combine it either, since it stays the newest window on
+        # disk until a later session finally crosses into a new bucket, by
+        # which point it is usually already past the backfill_hours horizon
+        # below and gets silently skipped as "too old" forever. Net effect:
+        # combined clips are never produced for any short-lived or
+        # restart-heavy session. Seed internal state with every window so
+        # that handoff to the live path still works for the one truly live
+        # window.
+        current_window_key = floor_to_window(
+            datetime.now(timezone.utc), self._window_minutes
+        ).strftime("%Y-%m-%d_%H-%M-%S")
         with self._lock:
             self._seen_windows.update(windows.keys())
             for window_key, clips in windows.items():
@@ -310,8 +326,8 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         queued = 0
         skipped_old = 0
         for window_key in sorted(windows):
-            if window_key >= newest:
-                continue   # in-progress window — leave to the live path
+            if window_key >= current_window_key:
+                continue   # still the live wall-clock window — leave to the live path
             if cutoff_key is not None and window_key < cutoff_key:
                 skipped_old += 1
                 continue   # older than the backfill horizon — leave as-is
