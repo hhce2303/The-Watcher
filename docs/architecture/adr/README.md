@@ -26,5 +26,6 @@ cambia, se crea un ADR nuevo que la *supersede*.
 | [0018](ADR-0018-go-liveview-relay-escalation-deferred.md) | Go como ruta de escalación para el relay de `LiveViewPort`: diferido (Python ahora) | Diferido |
 | [0019](ADR-0019-auto-event-clip-build-coalescing.md) | Auto-eventos: build de clip por EventService (retry+logging) + coalescencia de ventana (fix sobreesfuerzo) | Aceptado |
 | [0020](ADR-0020-browser-local-daily-channel.md) | Canal browser-local HTTPS/WSS separado para el iframe Daily SIG Systems | Aceptado |
+| [0021](ADR-0021-supervision-lan-live-view.md) | Supervisión LAN autenticada para vistas en vivo | Aceptado |
 
 ADR-0008..0012 son la migración de UI a Tauri 2.0 — ver [`docs/migration/`](../../migration/README.md).

@@ -51,6 +51,7 @@ class BrowserSessionManager:
         issuer_public_key_file: str,
         session_ttl_seconds: int = 300,
         capability_ttl_seconds: int = 30,
+        required_scope: str = "preview:read",
     ) -> None:
         if station_id <= 0:
             raise ValueError("BROWSER_LOCAL_STATION_ID must be a positive enrolled station id")
@@ -67,6 +68,7 @@ class BrowserSessionManager:
         self._public_key = key_path.read_text(encoding="utf-8")
         self._session_ttl = session_ttl_seconds
         self._capability_ttl = capability_ttl_seconds
+        self._required_scope = required_scope
         self._lock = threading.Lock()
         self._used_jti: dict[str, float] = {}
         self._sessions: dict[str, BrowserSession] = {}
@@ -114,7 +116,7 @@ class BrowserSessionManager:
         scope_set = set(scopes.split()) if isinstance(scopes, str) else set(scopes)
         # The browser channel is intentionally preview-only. An assertion with
         # broader scope is rejected rather than granting future route access.
-        if scope_set != {"preview:read"}:
+        if scope_set != {self._required_scope}:
             raise AuthenticationError("assertion scope invalid")
 
         now = time.monotonic()

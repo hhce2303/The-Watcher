@@ -234,6 +234,30 @@ class Settings:
         ),
     )
 
+    # ── Supervisor live view (separate authenticated LAN channel) ───────────
+    # This is intentionally NOT the browser-local server above.  It remains
+    # disabled until endpoint management distributes a corporate TLS cert,
+    # firewall rule and Daily issuer key to an enrolled Operator.
+    live_view_enabled: bool = _env_flag("LIVE_VIEW_ENABLED", False)
+    live_view_bind_host: str = os.getenv("LIVE_VIEW_BIND_HOST", "0.0.0.0")
+    live_view_port: int = int(os.getenv("LIVE_VIEW_PORT", "8766"))
+    live_view_origin: str = os.getenv("LIVE_VIEW_ORIGIN", "").rstrip("/")
+    live_view_parent_origin: str = os.getenv(
+        "LIVE_VIEW_PARENT_ORIGIN", "https://daily.sig.systems"
+    ).rstrip("/")
+    live_view_cert_file: str = os.getenv("LIVE_VIEW_CERT_FILE", "")
+    live_view_key_file: str = os.getenv("LIVE_VIEW_KEY_FILE", "")
+    live_view_issuer: str = os.getenv("LIVE_VIEW_ISSUER", "daily.sig.systems")
+    live_view_audience: str = os.getenv("LIVE_VIEW_AUDIENCE", "the-watcher-live")
+    live_view_issuer_kid: str = os.getenv("LIVE_VIEW_ISSUER_KID", "")
+    live_view_issuer_public_key_file: str = os.getenv(
+        "LIVE_VIEW_ISSUER_PUBLIC_KEY_FILE", ""
+    )
+    live_view_station_id: int = int(os.getenv("LIVE_VIEW_STATION_ID", "0"))
+    live_view_heartbeat_url: str = os.getenv("LIVE_VIEW_HEARTBEAT_URL", "")
+    live_view_heartbeat_seconds: int = int(os.getenv("LIVE_VIEW_HEARTBEAT_SECONDS", "30"))
+    live_view_max_viewers: int = int(os.getenv("LIVE_VIEW_MAX_VIEWERS", "3"))
+
     # ── OneDrive delivery (folder + share link) ───────────────────────────────
     # ONEDRIVE_ROOT — local root the LocalShareAdapter operates on.  Defaults to
     #   the conventional OneDrive sync folder so the desktop client uploads the
