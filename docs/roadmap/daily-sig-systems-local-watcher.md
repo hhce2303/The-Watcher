@@ -7,7 +7,7 @@ validar el piloto en navegadores administrados.
 ## Resultado y frontera
 
 Daily muestra un iframe `https://localhost:8765/embed` desde la página
-autenticada `https://daily.sig.systems`. El daemon Operator entrega clips y
+autenticada `https://daily.sig.systems`. El daemon Operator entrega sólo el
 preview de **esa estación**. No se abre una ruta LAN y no cambia el pipe
 Tauri/WebView2 de ADR-0009/0011.
 
@@ -16,8 +16,7 @@ Daily (usuario autenticado)                         Daemon Operator local
 ──────────────────────────                         ──────────────────────
 WatcherPage ─ iframe / postMessage ──────────────> /embed (UI navegador)
        └─ Edge Function: assertion Ed25519 ───────> WSS /events (sesión RAM)
-                                                    └─ /api/v1/clips
-                                                       /media/<cap> [Range]
+                                                    └─ /api/v1/monitors
                                                        /preview/<cap>
 ```
 
@@ -31,8 +30,8 @@ del padre: `frame-src https://localhost:8765`.
 - [x] ADR-0020 y adaptador `browser_local` separado de `adapters/ipc`.
 - [x] HTTPS/WSS `aiohttp`, bind exclusivo `127.0.0.1` y `::1`, puerto 8765,
   activo únicamente para Operator con feature flag.
-- [x] UI web de navegador independiente de Tauri; endpoints de lectura
-  limitados y allowlist de directorios compuesta en `main.py`.
+- [x] UI web de navegador independiente de Tauri; sólo expone monitores y
+  previews de lectura. No registra rutas de clips, media ni comandos.
 - [x] Identidad Ed25519 por instalación en
   `%LOCALAPPDATA%\The Watcher\browser_local\device_identity.json`, con intento
   de ACL privada. `Start-TheWatcher.ps1 -EnrollBrowserLocal` imprime sólo
@@ -42,7 +41,7 @@ del padre: `frame-src https://localhost:8765`.
 - [x] Assertions EdDSA con validación de issuer, audience, dispositivo, estación,
   scopes, tiempo, `jti` de un uso; sesión RAM 5 min y capabilities 30 s.
 - [x] CSP `frame-ancestors https://daily.sig.systems`, sin X-Frame-Options,
-  `Referrer-Policy: no-referrer`, Range para MP4 y logs con sujeto seudonimizado.
+  `Referrer-Policy: no-referrer` y logs con sujeto seudonimizado.
 
 Configuración mínima local, entregada por gestión de endpoint y nunca en git:
 
@@ -65,8 +64,8 @@ el listener falla cerrado y la grabación sigue funcionando.
 ## Fase 2 — Daily SIG Systems (implementada en el repo hermano)
 
 - [x] Migración `040_watcher_local_browser.sql`: catálogo de permisos,
-  `watcher_devices`, auditoría y RPCs de gestión. Ver es para todos los roles;
-  gestionar es sólo admin y lead supervisor.
+  `watcher_devices`, auditoría y RPCs de gestión. El preview externo es sólo
+  para Operator; gestionar es sólo admin y lead supervisor.
 - [x] Edge Function `issue-watcher-session`: verifica usuario Supabase,
   permiso efectivo, dispositivo activo y proof Ed25519; firma assertion de
   60 s con clave privada de secreto y audita sin token/capability.
@@ -113,12 +112,12 @@ Push-Location src-tauri; cargo check; Pop-Location
 ```
 
 En Chrome y Edge administrados, probar iframe desde el dominio productivo,
-clips MP4 con seek/Range, preview, renovación a los 4 min, certificado ausente,
+preview, renovación a los 4 min, certificado ausente,
 dispositivo revocado, assertion vencida/repetida y origen incorrecto. Vigilar
 los logs locales `[browser-local]` y `watcher_session_audit` sin capturar
 assertions/capabilities.
 
 Rollback: apagar el flag de Daily, denegar `watcher.recordings.view` o revocar
 el dispositivo. El Edge Function no emite nuevas assertions; las sesiones
-locales expiran como máximo en cinco minutos. No borrar clips, certificados ni
-la identidad del dispositivo salvo un procedimiento de decommission explícito.
+locales expiran como máximo en cinco minutos. No borrar certificados ni la
+identidad del dispositivo salvo un procedimiento de decommission explícito.

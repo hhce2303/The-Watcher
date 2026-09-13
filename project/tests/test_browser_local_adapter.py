@@ -116,7 +116,7 @@ def _make_adapter(tmp_path: Path) -> tuple[BrowserLocalAdapter, Ed25519PrivateKe
             get_monitors=lambda: [SimpleNamespace(name="Monitor 0", index=0, resolution="1920x1080")]
         ),
     )
-    return BrowserLocalAdapter(settings, api, clip_roots=(clips_root,)), issuer_key, clip
+    return BrowserLocalAdapter(settings, api), issuer_key, clip
 
 
 def _assertion(
@@ -134,7 +134,7 @@ def _assertion(
             "sub": "42",
             "device_id": adapter.enrollment_payload["device_id"],
             "station_id": 23,
-            "scope": ["recordings:read", "preview:read"],
+            "scope": ["preview:read"],
             "nonce": "n" * 32,
             "jti": jti,
             "iat": now,
@@ -152,7 +152,7 @@ def _open(url: str, headers: dict[str, str] | None = None):
     return urllib.request.urlopen(request, context=ssl._create_unverified_context(), timeout=5)  # noqa: S501
 
 
-def test_browser_local_tls_csp_loopback_and_range(tmp_path: Path) -> None:
+def test_browser_local_tls_csp_loopback_and_preview_only(tmp_path: Path) -> None:
     adapter, issuer_key, clip = _make_adapter(tmp_path)
     assert adapter.start()
     try:
@@ -167,7 +167,7 @@ def test_browser_local_tls_csp_loopback_and_range(tmp_path: Path) -> None:
 
         with pytest.raises(urllib.error.HTTPError) as denied:
             _open(f"{base}/api/v1/clips")
-        assert denied.value.code == 401
+        assert denied.value.code == 404
 
         request = urllib.request.Request(
             f"{base}/api/v1/bootstrap/sign",
@@ -180,18 +180,14 @@ def test_browser_local_tls_csp_loopback_and_range(tmp_path: Path) -> None:
         assert bad_origin.value.code == 403
 
         session = adapter._sessions.open_session(_assertion(adapter, issuer_key))  # noqa: SLF001
-        capability = adapter._sessions.issue_capability(session, clip, "media")  # noqa: SLF001
-        with _open(f"{base}/media/{capability}", {"Range": "bytes=0-3"}) as response:
-            assert response.status == 206
-            assert response.read() == b"0123"
-            assert response.headers["Content-Range"] == "bytes 0-3/10"
+        with _open(f"{base}/api/v1/monitors", {"Authorization": f"Bearer {session.token}"}) as response:
+            monitors = json.loads(response.read())
+        assert len(monitors["monitors"]) == 1
+        with _open(f"{base}{monitors['monitors'][0]['preview_url']}") as response:
+            assert response.read() == b"not-a-real-jpeg"
 
-        outside = tmp_path / "not-allowed.mp4"
-        outside.write_bytes(b"no")
-        outside_capability = adapter._sessions.issue_capability(session, outside, "media")  # noqa: SLF001
-        with pytest.raises(urllib.error.HTTPError) as forbidden_path:
-            _open(f"{base}/media/{outside_capability}")
-        assert forbidden_path.value.code == 404
+        with pytest.raises(ValueError, match="unsupported capability"):
+            adapter._sessions.issue_capability(session, clip, "media")  # noqa: SLF001
     finally:
         adapter.stop()
 
@@ -231,3 +227,11 @@ def test_assertion_is_single_use_and_bound_to_device_and_station(tmp_path: Path)
     tampered = ".".join((header, claims, altered_signature))
     with pytest.raises(AuthenticationError, match="assertion rejected"):
         adapter._sessions.open_session(tampered)  # noqa: SLF001
+
+    broader_scope = jwt.decode(_assertion(adapter, issuer_key, jti="jti-broad"), options={"verify_signature": False})
+    broader_scope["scope"] = ["preview:read", "recordings:read"]
+    invalid_scope = jwt.encode(
+        broader_scope, issuer_key, algorithm="EdDSA", headers={"kid": "watcher-ed25519-test"}
+    )
+    with pytest.raises(AuthenticationError, match="scope invalid"):
+        adapter._sessions.open_session(invalid_scope)  # noqa: SLF001

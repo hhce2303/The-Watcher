@@ -112,7 +112,9 @@ class BrowserSessionManager:
             raise AuthenticationError("assertion station mismatch")
         scopes = claims.get("scope", [])
         scope_set = set(scopes.split()) if isinstance(scopes, str) else set(scopes)
-        if not {"recordings:read", "preview:read"}.issubset(scope_set):
+        # The browser channel is intentionally preview-only. An assertion with
+        # broader scope is rejected rather than granting future route access.
+        if scope_set != {"preview:read"}:
             raise AuthenticationError("assertion scope invalid")
 
         now = time.monotonic()
@@ -148,7 +150,7 @@ class BrowserSessionManager:
             return session
 
     def issue_capability(self, session: BrowserSession, target: Path, kind: str) -> str:
-        if kind not in {"media", "preview"}:
+        if kind != "preview":
             raise ValueError("unsupported capability kind")
         now = time.monotonic()
         token = secrets.token_urlsafe(24)

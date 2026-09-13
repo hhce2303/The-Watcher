@@ -11,7 +11,7 @@ import json
 import ssl
 import threading
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from aiohttp import WSMsgType, web
 from loguru import logger
@@ -27,13 +27,9 @@ _MAX_WS_MESSAGE = 16 * 1024
 class BrowserLocalAdapter:
     """Serve an enrolled browser UI over HTTPS/WSS on loopback only."""
 
-    def __init__(self, settings, api_layer, *, clip_roots: Iterable[Path]) -> None:
+    def __init__(self, settings, api_layer) -> None:
         self._settings = settings
         self._api = api_layer
-        # Keep the filesystem allowlist explicit at the composition root. The
-        # browser adapter consumes facade DTOs but never treats ClipsApi's
-        # private state as an implicit path authority.
-        self._clip_roots = tuple(Path(root).resolve() for root in clip_roots)
         self._identity = DeviceIdentityStore(settings.browser_local_data_dir).load_or_create()
         self._sessions = BrowserSessionManager(
             identity=self._identity,
@@ -132,9 +128,7 @@ class BrowserLocalAdapter:
                 web.get("/embed.css", self._embed_css),
                 web.get("/api/v1/health", self._health),
                 web.post("/api/v1/bootstrap/sign", self._sign_challenge),
-                web.get("/api/v1/clips", self._list_clips),
                 web.get("/api/v1/monitors", self._list_monitors),
-                web.get("/media/{capability}", self._media),
                 web.get("/preview/{capability}", self._preview),
                 web.get("/events", self._events),
             ]
@@ -230,7 +224,10 @@ class BrowserLocalAdapter:
     async def _embed(self, _request: web.Request) -> web.Response:
         parent = html.escape(self._settings.browser_local_parent_origin, quote=True)
         return web.Response(
-            text=_EMBED_HTML.replace("__PARENT_ORIGIN__", parent),
+            text=_EMBED_HTML.replace("__PARENT_ORIGIN__", parent).replace(
+                '<section><h2>Grabaciones</h2><div class="content"><ul id="clips"></ul><video id="player" controls playsinline></video></div></section>',
+                "",
+            ),
             content_type="text/html",
             charset="utf-8",
         )
@@ -257,26 +254,6 @@ class BrowserLocalAdapter:
             {"device_id": self._sessions.device_id, "nonce": nonce, "signature": self._sessions.sign_bootstrap_challenge(nonce)}
         )
 
-    async def _list_clips(self, request: web.Request) -> web.Response:
-        session = self._require_bearer(request)
-        result = []
-        for item in self._api.clips.list_clips():
-            path = Path(item.path)
-            if not self._is_allowed_clip(path):
-                continue
-            cap = self._sessions.issue_capability(session, path, "media")
-            result.append(
-                {
-                    "id": cap[:16],
-                    "clip_name": item.clip_name,
-                    "size_label": item.size_label,
-                    "date_label": item.date_label,
-                    "is_event": item.is_event,
-                    "media_url": f"/media/{cap}",
-                }
-            )
-        return web.json_response({"clips": result})
-
     async def _list_monitors(self, request: web.Request) -> web.Response:
         session = self._require_bearer(request)
         monitors = []
@@ -294,16 +271,6 @@ class BrowserLocalAdapter:
                 }
             )
         return web.json_response({"monitors": monitors})
-
-    async def _media(self, request: web.Request) -> web.StreamResponse:
-        capability = self._sessions.require_capability(request.match_info["capability"], "media")
-        path = capability.target.resolve()
-        if not self._is_allowed_clip(path) or not path.is_file():
-            raise web.HTTPNotFound()
-        return web.FileResponse(
-            path,
-            headers={"Content-Type": "video/mp4", "Content-Disposition": "inline"},
-        )
 
     async def _preview(self, request: web.Request) -> web.StreamResponse:
         capability = self._sessions.require_capability(request.match_info["capability"], "preview")
@@ -360,9 +327,6 @@ class BrowserLocalAdapter:
             raise AuthenticationError("missing bearer")
         return self._sessions.require_session(token)
 
-    def _is_allowed_clip(self, path: Path) -> bool:
-        return path.suffix.lower() == ".mp4" and _inside_any(path, self._clip_roots)
-
     def _is_allowed_preview(self, path: Path) -> bool:
         return path.name == "preview.jpg" and _inside_any(path, [self._settings.segment_dir])
 
@@ -414,9 +378,7 @@ _EMBED_CSS = """*{box-sizing:border-box}body{margin:0;background:#101827;color:#
 _EMBED_JS = """(() => {
   const parentOrigin = document.body.dataset.parentOrigin;
   const status = document.getElementById('status');
-  const clips = document.getElementById('clips');
   const monitors = document.getElementById('monitors');
-  const player = document.getElementById('player');
   let session = null;
   let refreshTimer = null;
   let refreshTimeout = null;
@@ -430,13 +392,7 @@ _EMBED_JS = """(() => {
     return response.json();
   };
   const render = async () => {
-    const [clipData, monitorData] = await Promise.all([api('/api/v1/clips'), api('/api/v1/monitors')]);
-    clips.replaceChildren(...clipData.clips.map((clip) => {
-      const button = document.createElement('button');
-      button.textContent = `${clip.clip_name} · ${clip.date_label} · ${clip.size_label}`;
-      button.onclick = () => { player.src = clip.media_url; player.play().catch(() => {}); };
-      const li = document.createElement('li'); li.append(button); return li;
-    }));
+    const monitorData = await api('/api/v1/monitors');
     monitors.replaceChildren(...monitorData.monitors.map((monitor) => {
       const tile = document.createElement('article'); tile.className = 'tile';
       const label = document.createElement('strong'); label.textContent = `${monitor.name} (${monitor.resolution})`;
