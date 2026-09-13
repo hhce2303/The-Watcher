@@ -2,7 +2,7 @@
 
 The editor reads this store to paint timeline markers; the event pipeline writes
 to it.  Adapter v1 is SQLite (Fase 1).  See
-docs/editing/adr/ADR-0004-ai-detection-seams.md.
+docs/architecture/adr/ADR-0004-ai-detection-seams.md.
 """
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 
 QML is gone (F3): this process only ever runs headless. The Tauri UI (React)
 is a separate process that connects over the named pipe — see
-project/docs/migration/reference-target-architecture.md.
+docs/migration/reference-target-architecture.md.
 """
 from __future__ import annotations
 

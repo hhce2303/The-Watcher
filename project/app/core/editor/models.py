@@ -1,7 +1,7 @@
 """Evidence-reel timeline model (R-1, R-2).
 
 A single ordered track of trimmed clips that export to one concatenated MP4.
-See docs/editing/adr/ADR-0001-evidence-reel-single-track.md.
+See docs/architecture/adr/ADR-0001-evidence-reel-single-track.md.
 
 Pure domain — no Qt / FFmpeg / Rust imports.  ``ClipEntry`` is a frozen
 dataclass (matches the player-domain convention in ``core/player/models.py``);

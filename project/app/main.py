@@ -48,6 +48,7 @@ from app.adapters.filesystem.request_adapter import JsonRequestAdapter
 from app.adapters.ws.request_server import ClipRequestServer
 from app.adapters.ws.request_client import ClipRequestClient
 from app.adapters.preview_server.mjpeg_server_adapter import MjpegPreviewServerAdapter
+from app.adapters.browser_local import BrowserLocalAdapter
 from app.core.monitor_detection.service import MonitorDetectionService
 # LivePreviewService removed — preview is now embedded in the recorder FFmpeg process
 
@@ -321,12 +322,35 @@ def _build_preview_server(
     return MjpegPreviewServerAdapter(settings)
 
 
+def _build_browser_local_adapter(
+    user_config: UserConfig,
+    settings: Settings,
+    api: ApiLayer,
+    clips_dir: Path,
+    event_clips_dir: Path,
+) -> Optional[BrowserLocalAdapter]:
+    """Build the external browser adapter only for the Operator daemon.
+
+    It is intentionally not part of the named-pipe router.  The adapter itself
+    fails closed when its feature flag, TLS material, site binding, or issuer
+    key are missing, which keeps ordinary desktop deployments unchanged.
+    """
+    if user_config.role != OPERATOR or not settings.browser_local_enabled:
+        return None
+    try:
+        return BrowserLocalAdapter(settings, api, clip_roots=(clips_dir, event_clips_dir))
+    except Exception as exc:  # noqa: BLE001 -- recording must survive a bad browser configuration
+        logger.error("[browser-local] unavailable: {}", exc)
+        return None
+
+
 def _start_recording_services(
     backend: RecordingBackend,
     user_config: UserConfig,
     detection_service: MonitorDetectionService,
     settings: Settings,
     preview_server: Optional[MjpegPreviewServerAdapter],
+    browser_local: Optional[BrowserLocalAdapter],
 ) -> None:
     """Start the operator preview server (if applicable) and every backend service.
 
@@ -346,6 +370,8 @@ def _start_recording_services(
     # over JSON invoke). Nothing in this process needs to forward the paths.
     if preview_server is not None:
         preview_server.start()
+    if browser_local is not None:
+        browser_local.start()
 
     # ── Start recording ───────────────────────────────────────────────
     # Operator always records; IT only if its autorecord toggle is on;
@@ -613,6 +639,7 @@ def _make_stop_backend_cb(
     req_server: Optional[ClipRequestServer],
     req_client: Optional[ClipRequestClient],
     preview_server: Optional[MjpegPreviewServerAdapter],
+    browser_local: Optional[BrowserLocalAdapter],
 ) -> Callable[[], None]:
     """Build the full-backend teardown callback (stops FFmpeg, no orphans — TD-3)."""
 
@@ -642,6 +669,8 @@ def _make_stop_backend_cb(
             req_client.stop()
         if preview_server is not None:
             preview_server.stop()
+        if browser_local is not None:
+            browser_local.stop()
 
     return _stop_backend
 
@@ -735,6 +764,9 @@ def main() -> None:
         event_clips_dir=event_clips_dir,
         preview_server=preview_server,
     )
+    browser_local = _build_browser_local_adapter(
+        user_config, settings, api, clips_dir, event_clips_dir
+    )
 
     req_server, req_client = _wire_request_system(user_config, settings, api)
     _wire_failure_callbacks(backend, api, is_operator_daemon=(user_config.role == OPERATOR))
@@ -743,7 +775,7 @@ def main() -> None:
     api.settings.set_autorecord_cb(_make_autorecord_cb(recording_service))
 
     _stop_backend = _make_stop_backend_cb(
-        backend, detection_service, req_server, req_client, preview_server
+        backend, detection_service, req_server, req_client, preview_server, browser_local
     )
 
     # ── Role-conditional topology (ADR-0010): headless daemon / sidecar ──
@@ -776,7 +808,7 @@ def main() -> None:
             return  # shutdown raced startup — nothing to do
         try:
             _start_recording_services(
-                backend, user_config, detection_service, settings, preview_server
+                backend, user_config, detection_service, settings, preview_server, browser_local
             )
             _recover_startup_clips(backend, settings)
         except Exception:

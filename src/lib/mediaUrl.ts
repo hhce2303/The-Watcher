@@ -2,7 +2,7 @@
  * Builds URLs for the `watcher://` custom protocol (src-tauri/src/media_protocol.rs).
  *
  * Windows/WebView2 serves custom protocols at `http://<scheme>.localhost/...`
- * (this app targets Windows only — see project/docs/migration ADRs).
+ * (this app targets Windows only — see docs/migration ADRs).
  */
 const ORIGIN = "http://watcher.localhost";
 

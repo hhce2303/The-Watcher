@@ -2,7 +2,7 @@
 
 Higher-level than :class:`SegmentCompilerPort`: it owns the *smart* strategy
 (stream-copy when the cut is near a keyframe, re-encode only the boundary GOP for
-frame accuracy — see docs/editing/adr/ADR-0002-smart-trim-copy-vs-encode.md),
+frame accuracy — see docs/architecture/adr/ADR-0002-smart-trim-copy-vs-encode.md),
 then delegates the lossless concatenation to a ``SegmentCompilerPort``.
 """
 from __future__ import annotations

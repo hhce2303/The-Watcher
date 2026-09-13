@@ -14,9 +14,9 @@ Rules:
 The Watcher migra la UI de **PySide6/QML → Tauri 2.0 (Rust) + React**, con el **core Python como
 sidecar ahora** y destino **hexágono Rust vía PyO3** (port por port). Roadmap aprobado (2026-06-30),
 revisado por ingeniería. **Antes de proponer o iterar cualquier cosa de UI/arquitectura, ten presente
-esto.** Docs completas: [`project/docs/migration/`](project/docs/migration/README.md) ·
-ADRs 0008-0012 en [`project/docs/editing/adr/`](project/docs/editing/adr/README.md) ·
-deuda técnica y buenas prácticas: [`project/docs/migration/tech-debt-and-best-practices.md`](project/docs/migration/tech-debt-and-best-practices.md).
+esto.** Docs completas: [`docs/migration/`](docs/migration/README.md) ·
+ADRs 0008-0012 en [`docs/architecture/adr/`](docs/architecture/adr/README.md) ·
+deuda técnica y buenas prácticas: [`docs/migration/tech-debt-and-best-practices.md`](docs/migration/tech-debt-and-best-practices.md).
 
 **No negociables (decisiones ya tomadas):**
 - La costura está limpia: `app/core/` NO importa Qt. Migrar = reemplazar `adapters/ui/`, no el negocio.

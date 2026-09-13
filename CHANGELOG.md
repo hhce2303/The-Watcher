@@ -5,7 +5,7 @@ All notable changes to The Watcher are documented in this file.
 ## [Unreleased]
 
 ### Fixed
-- Automatic (AI-detection) event clips now build through the same error-handling/retry path as manual events — a failed build used to fail silently (the exception died inside an unhandled timer thread with no log line at all). See [ADR-0019](project/docs/editing/adr/ADR-0019-auto-event-clip-build-coalescing.md).
+- Automatic (AI-detection) event clips now build through the same error-handling/retry path as manual events — a failed build used to fail silently (the exception died inside an unhandled timer thread with no log line at all). See [ADR-0019](docs/architecture/adr/ADR-0019-auto-event-clip-build-coalescing.md).
 - Continuous detections (e.g. a person lingering in frame) no longer trigger a full multi-monitor clip re-encode roughly every 30 seconds — up to 8 heavily-overlapping clip builds could pile up for a single visit. Auto-event clip builds are now coalesced to at most one per clip-window duration (configurable via `EVENT_AUTO_BUILD_MIN_INTERVAL_SECONDS`); the event itself is still logged for analytics/timeline at the original cooldown.
 
 ## [0.1.0] - 2026-07-10

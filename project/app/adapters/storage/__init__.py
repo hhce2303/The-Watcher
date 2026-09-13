@@ -1,1 +1,1 @@
-"""Storage adapters (event store, …). Fase 1 — see docs/editing/roadmap.md."""
+"""Storage adapters (event store, …). Fase 1 — see docs/architecture/roadmap.md."""

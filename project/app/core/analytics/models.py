@@ -5,7 +5,7 @@ the editor's timeline markers.  Frozen + validated so the same record is safe to
 persist to SQLite, serialise to a ``<clip>.events.json`` sidecar, and hand to QML.
 
 Pure domain — no Qt / FFmpeg / ML imports.  A bump to ``SCHEMA_VERSION`` signals
-an incompatible change (see docs/editing/roadmap.md §buenas prácticas).
+an incompatible change (see docs/architecture/roadmap.md §buenas prácticas).
 """
 from __future__ import annotations
 

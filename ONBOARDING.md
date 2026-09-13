@@ -7,7 +7,8 @@ playback) is Windows-specific by design.
 ## 1. Prerequisites
 
 - **Windows 10/11.**
-- **Python 3.13+** — [python.org](https://python.org). Confirm with `python --version`.
+- **uv** — [astral.sh/uv](https://docs.astral.sh/uv/). It installs/selects Python 3.13 for the
+  project and synchronizes the venv, so a global `python` on `PATH` is not required.
 - **Node.js 22+** and npm — confirm with `node --version`.
 - **FFmpeg** on `PATH` — `winget install Gyan.FFmpeg`.
 - **Rust (optional but recommended)** — [rustup.rs](https://rustup.rs), MSVC toolchain.
@@ -23,11 +24,12 @@ From the repo root:
 .\setup_env.ps1
 ```
 
-This creates a Python venv at `%LOCALAPPDATA%\The Watcher\venv` (deliberately
-*outside* the repo/OneDrive — a venv is machine-specific and must not sync
-between PCs), installs `project/requirements.txt` into it, and — only if Rust
-is available — compiles the optional native clip engine. Safe to re-run; it
-detects and repairs a broken venv.
+This uses `uv` to install/select Python 3.13 and creates a venv at
+`%LOCALAPPDATA%\The Watcher\venv` (deliberately *outside* the repo/OneDrive — a
+venv is machine-specific and must not sync between PCs). It synchronizes
+`project/requirements.txt` and — only if Rust is available — compiles the
+optional native clip engine. Safe to re-run; it detects and repairs a broken
+venv. If `uv` is missing, install it with `winget install --id=astral-sh.uv -e`.
 
 Then install the frontend dependencies:
 
@@ -62,7 +64,8 @@ Three independent suites — none require the others to pass first.
 
 ```powershell
 $env:PYTHONPATH = "project"
-python -m pytest project/tests -q
+$twPython = Join-Path $env:LOCALAPPDATA "The Watcher\venv\Scripts\python.exe"
+& $twPython -m pytest project/tests -q
 ```
 
 **Frontend (vitest)**:
@@ -107,9 +110,9 @@ run automatically in CI — see `.github/workflows/ci.yml`.
 
 - [`project/README.md`](project/README.md) — architecture, project structure,
   configuration reference, build & install.
-- [`project/docs/migration/README.md`](project/docs/migration/README.md) —
+- [`docs/migration/README.md`](docs/migration/README.md) —
   the QML/PySide6 → Tauri + React migration and the Rust hexagon roadmap.
-- [`project/docs/editing/adr/README.md`](project/docs/editing/adr/README.md) —
+- [`docs/architecture/adr/README.md`](docs/architecture/adr/README.md) —
   architecture decision records.
 - [`TODOS.md`](TODOS.md) — deferred follow-ups and known gaps, with why they
   were deferred and what would trigger picking them back up.

@@ -21,20 +21,19 @@ Set-Location $scriptDir
 
 # El venv vive FUERA de OneDrive (en %LOCALAPPDATA%) para no sincronizarse entre PCs.
 $venvDir = Join-Path $env:LOCALAPPDATA "The Watcher\venv"
+$venvPython = Join-Path $venvDir "Scripts\python.exe"
 
-if (-not (Test-Path "$venvDir\Scripts\Activate.ps1")) {
+if (-not (Test-Path $venvPython)) {
     $setup = Join-Path $scriptDir "..\setup_env.ps1"
     if (Test-Path $setup) {
         Write-Host "Entorno virtual no encontrado -> ejecutando setup_env.ps1..." -ForegroundColor Yellow
         & powershell -ExecutionPolicy Bypass -File $setup
     }
-    if (-not (Test-Path "$venvDir\Scripts\Activate.ps1")) {
+    if (-not (Test-Path $venvPython)) {
         Write-Error "No se pudo preparar el entorno virtual. Ejecuta setup_env.ps1 manualmente."
         exit 1
     }
 }
-
-& "$venvDir\Scripts\Activate.ps1"
 
 # -- Reset opcional: forzar el wizard de rol (-ResetRole) ----------------------
 $configDir = "$env:LOCALAPPDATA\The Watcher"
@@ -71,15 +70,15 @@ $backendFlag = if ($role -eq "operator") { "--daemon" } else { "--sidecar" }
 # -- Launch by mode (ADR-0010; C4 - the backend picks --daemon/--sidecar) -----
 switch ($Mode) {
     "daemon"  { Write-Host "Launching headless DAEMON (Operator topology)..." -ForegroundColor Cyan
-                python -m app.main --daemon }
+                & $venvPython -m app.main --daemon }
     "sidecar" { Write-Host "Launching headless SIDECAR (IT/Supervisor topology)..." -ForegroundColor Cyan
-                python -m app.main --sidecar }
+                & $venvPython -m app.main --sidecar }
     "tauri"   {
         Write-Host "Launching TAURI dev mode: Python backend ($backendFlag, role='$role') + Tauri shell..." -ForegroundColor Cyan
         # Build artefacts must live outside OneDrive (TD: sync-lock permissions).
         $env:CARGO_TARGET_DIR = "$env:LOCALAPPDATA\the-watcher\target"
         # Start the Python backend in the background; it binds the named pipe.
-        $backend = Start-Process python -ArgumentList "-m", "app.main", $backendFlag `
+        $backend = Start-Process $venvPython -ArgumentList "-m", "app.main", $backendFlag `
             -PassThru -NoNewWindow
         Write-Host "  Python backend PID: $($backend.Id)" -ForegroundColor DarkGray
         # Give the backend a moment to bind the pipe before Tauri connects.

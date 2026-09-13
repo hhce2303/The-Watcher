@@ -173,9 +173,9 @@ implementation work moving; has a clear trigger and a hard gate before rollout.
   `/autoplan`.
 - **Context:** Design doc + full review history:
   `~/.gstack/projects/hhce2303-The-Watcher/hcruz--feat-f1-backend-headless-design-20260712-132557.md`.
-  Architecture pointer: `project/docs/migration/reference-target-architecture.md`
+  Architecture pointer: `docs/migration/reference-target-architecture.md`
   (`LiveViewPort` section). Go-as-escalation-path decision:
-  [ADR-0018](project/docs/editing/adr/ADR-0018-go-liveview-relay-escalation-deferred.md).
+  [ADR-0018](docs/architecture/adr/ADR-0018-go-liveview-relay-escalation-deferred.md).
 - **Depends on:** whoever owns Operator/IT/Supervisor role definitions landing at least
   a placeholder rule before rollout to the real fleet.
 
@@ -206,6 +206,234 @@ clear trigger to pick it up.
   (`unlock_it()`, sole consumer). Only consumer confirmed via repo-wide grep.
 - **Depends on:** whoever owns the IT-unlock UX flow.
 
+## Resource governance — open risks (architecture-bootstrap gap-fill, 2026-09-13)
+Captured while filling the `nfr.md`/`glossary.md`/`CONTRIBUTING.md`/`docs/backlog/` gaps
+in the architecture-bootstrap baseline, per user report that the project ships with
+"serious bugs, mostly resource abuse." Nothing below is a new finding — each line is
+already evidenced elsewhere in the repo; this entry exists so the category is
+tracked as one open risk instead of scattered across ADRs and prior TODOS items.
+Full detail and IDs: [`docs/architecture/nfr.md`](docs/architecture/nfr.md)
+§§1–2 (NFR-Perf-4/5, NFR-Rel-1/6, NFR-Obs-2).
+
+### 11. Resource-abuse risk surface has partial governance, not full coverage
+- **What:** Five concrete gaps, all already documented individually:
+  1. The batch FFmpeg Job's memory ceiling (`BATCH_JOB_MEMORY_LIMIT_MB`) was verified
+     by configuration only — never forced against a real OOM ([ADR-0015](docs/architecture/adr/ADR-0015-batch-ffmpeg-governance.md)).
+  2. The recorder process itself is **intentionally unbounded** (no CPU/memory cap —
+     a hard cap would freeze it under budget exhaustion), which is the single
+     largest surface for uncontrolled resource use if the capture pipeline
+     misbehaves ([ADR-0015](docs/architecture/adr/ADR-0015-batch-ffmpeg-governance.md) §Contexto).
+  3. `ProcTelemetry` swallows `psutil`/PID errors silently by design (best-effort) —
+     it can stop reporting a real resource problem with no alert (same ADR).
+  4. Only the recorder's own supervisor detects a hang; a full-app freeze is
+     invisible to the OS watchdog, which only reacts to process *exit* (item #1
+     above, still open).
+  5. A degraded watchdog fallback (`HKCU Run` instead of the Scheduled Task) is
+     logged but not surfaced to IT (item #2 above, still open).
+- **Why:** None of these are individually new, but nobody had connected them as one
+  "resource governance" risk category before. Reported by the user as the project's
+  most serious class of bug at this point.
+- **Pros of closing:** A pilot deployment (already recommended in ADR-0015 to close
+  the ADR-0007 gate) would exercise #1 and #2 together — a good, cheap way to get
+  real evidence instead of guessing.
+- **Cons:** No fix proposed here on purpose — this entry is a registration of the
+  risk, not a remediation plan. Each sub-item already has its own trigger (see
+  `nfr.md`); solving one here without touching the others would be premature scope.
+- **Context:** `project/app/infrastructure/proc_telemetry.py`, `process_guard.py`
+  (batch Job + semaphore), `app/core/recording_service/supervisor.py` (recorder-only
+  hang detection).
+- **Depends on:** the pilot-deployment telemetry window already called for in
+  [ADR-0015](docs/architecture/adr/ADR-0015-batch-ffmpeg-governance.md) /
+  [ADR-0017](docs/architecture/adr/ADR-0017-adr0007-sla-verdict-confirmed.md); no
+  new owner assigned yet.
+
+## Silent-failure audit remediation — roadmap (2026-09-13)
+Captured from a full-repo `/investigate` audit of `app/core`, `app/adapters`,
+`app/infrastructure`/`app/runtime`, and `native/watcher_segments` (no Tauri/React
+UI exists yet — still headless-sidecar phase). Nothing here has been fixed;
+this is the tracker + a proposed fix order. Full findings kept in session
+history; each item below carries file:line so it can be picked up standalone.
+
+**Proposed fix order (roadmap):**
+1. **Wave 1 — data-loss / topology-integrity (items 12-15):** these can silently
+   turn an Operator into a non-recording machine, or make IT falsely believe a
+   clip request was saved. Fix first — highest blast radius, lowest effort per fix
+   (each is a narrow except-block).
+2. **Wave 2 — last-resort alerting (items 16-18):** the "we already gave up,
+   now tell someone" paths. If these are broken, every other safeguard in the
+   app is silently defeated at the finish line.
+3. **Wave 3 — watchdog/process governance (items 19-21):** Job Object failures,
+   health-service arming, and `RecordingService` thread-safety. Higher effort
+   (touches concurrency), do after Wave 1/2 land and are verified.
+4. **Wave 4 — UX-visible but non-critical (items 22-26):** stale live-preview
+   tiles, MJPEG catch-all logging, delivery path mismatches, ACL hardening,
+   batch analyzer retries. Fix opportunistically.
+
+### 12. Corrupt `user_config.json` silently demotes Operator to unconfigured
+- **What:** `JsonUserConfigAdapter.load()` (`app/adapters/filesystem/user_config_adapter.py:26-42`)
+  catches any load exception and returns `UserConfig()` (role `""` = unconfigured),
+  logged only at `warning`. `role.py`/`main.py` then silently build no recording
+  stack and remove the Scheduled Task watchdog.
+- **Why:** A truncated write (crash/power-loss mid-`save()`, disk full, AV lock)
+  turns into "operator stopped recording" with zero fatal signal.
+- **Fix direction:** distinguish "file absent" (fine, first run) from "file present
+  but unparseable" (must fail loud — refuse silent fallback to unconfigured,
+  surface a startup error / keep last-known-good role instead).
+- **Depends on:** none — self-contained in the adapter.
+
+### 13. `save()` failures on `user_config.json` are invisible to the caller
+- **What:** `JsonUserConfigAdapter.save()` (`app/adapters/filesystem/user_config_adapter.py:53-70`)
+  swallows write errors with only a `warning`; no exception reaches `SettingsApi`
+  or the role-change flow.
+- **Why:** Combined with #12, a role change can appear to succeed in the UI but
+  revert silently on next relaunch.
+- **Fix direction:** propagate a typed result/exception so `SettingsApi.set_role`
+  can report failure to the caller instead of assuming success.
+- **Depends on:** #12 (same file, do together).
+
+### 14. IT server ACKs a clip request even when persisting it failed
+- **What:** `request_server.py:146` sends `{"type": "ack", ...}` unconditionally;
+  `JsonRequestAdapter.save()` (`app/adapters/filesystem/request_adapter.py:32-41`)
+  swallows `OSError` and returns `None` either way.
+- **Why:** Supervisor believes a clip request was received and will be fulfilled;
+  it silently never was.
+- **Fix direction:** `save()` should return success/failure (or raise); `_on_message`
+  must send an error response instead of `ack` when persistence fails.
+- **Depends on:** none.
+
+### 15. Broken native Rust extension is indistinguishable from "not installed"
+- **What:** `_load_native()` (`app/adapters/native/rust_segment_compiler.py:22-29`)
+  folds `ImportError` (expected, FFmpeg-only build) and a corrupt/ABI-mismatched
+  `.pyd` (packaging defect) into the same `None` + info-level fallback log.
+- **Why:** A packaging regression that ships a bad `.pyd` degrades every machine
+  to the slower FFmpeg path with no alert distinguishing it from the intentional
+  no-Rust-build case.
+- **Fix direction:** log the actual exception type/message at `warning` when it's
+  anything other than a clean `ImportError`, so a DLL/ABI failure is visibly
+  different from "module not present."
+- **Depends on:** none.
+
+### 16. Last-resort failure callbacks (`on_clip_failed`/`on_recording_failed`) swallow their own exceptions at `debug`
+- **What:** `event_service.py:199-207` and `recording_service/supervisor.py:136-143`
+  wrap the final give-up notification in `except Exception: logger.debug(...)`
+  — the one place in the codebase that *should* escalate loudest logs quietest.
+- **Why:** If the wired callback itself throws (bug in DTO construction, bus in a
+  bad state), the operator never learns recording stopped for good or a clip
+  permanently failed — and there's no log trail above debug to even diagnose it.
+- **Fix direction:** match the pattern used everywhere else in the codebase —
+  `logger.exception(...)` (ERROR + traceback), not `debug`.
+- **Depends on:** none — two one-line severity/API fixes.
+
+### 17. `DiskSpaceMonitor` never escalates when it can't read disk usage
+- **What:** `disk_monitor.py:83-93` catches any `psutil.disk_usage` failure,
+  logs a `warning`, and returns — no escalation ladder like the health/detection
+  services have, and `on_low_disk` never fires from this path.
+- **Why:** A disconnected network share or ejected removable drive makes the
+  one guard against filling the recording disk go permanently silent.
+- **Fix direction:** treat N consecutive read failures as itself a critical
+  condition (escalate the same way `RecordingHealthService`/`MonitorDetectionService`
+  already do), not as "nothing to report."
+- **Depends on:** none — same file already has the escalation pattern to copy
+  from other services.
+
+### 18. `RecordingApi._persist_selection` drops monitor-selection persistence failures
+- **What:** `app/core/api/recording_api.py:199-207` — `toggle_monitor()` always
+  reports success to the UI regardless of whether the on-disk save worked.
+- **Why:** Operator's monitor-selection choice silently reverts on next restart
+  with no explanation ("the app forgot my setting").
+- **Fix direction:** publish a bus event (or return a failure DTO) when
+  `_persist_selection` fails, so the UI can show a real warning.
+- **Depends on:** #13 if the underlying adapter's save-failure signaling changes.
+
+### 19. `_start_recording_async` never arms `health_service` if startup fails
+- **What:** `app/main.py:798-822` — on any exception from `_start_recording_services`/
+  `_recover_startup_clips`, the function logs and returns without calling
+  `backend.health_service.start()`. The Scheduled Task watchdog trigger
+  (`os._exit(1)` on hang) lives inside that health service, so it's never armed.
+- **Why:** A daemon that fails to start recording keeps running (looks alive to
+  any process monitor) with zero self-healing path — no crash, so the Scheduled
+  Task restart never fires either.
+- **Fix direction:** on this failure path, force an immediate `os._exit(1)` (or
+  equivalent) so the existing watchdog restart mechanism actually engages,
+  instead of leaving a live-but-broken process.
+- **Depends on:** none.
+
+### 20. Job Object assignment failures are logged at `debug` — FFmpeg children can become unkillable
+- **What:** `process_guard.py:215-245` — `CreateJobObjectW`/`AssignProcessToJobObject`
+  failures are caught and logged at `debug` only.
+- **Why:** On a locked-down image (EDR/AV blocking Job Objects), every FFmpeg
+  recorder/batch child silently loses its "die with the app" guarantee — directly
+  relevant to TD-3 (`process.kill()` doesn't reliably kill the PyInstaller
+  one-file sidecar).
+- **Fix direction:** raise this to `warning`/`error` and consider surfacing it
+  through the same IT-visibility channel as item #2 above (degraded watchdog
+  state) — this is the same category of "fleet health IT should know about."
+- **Depends on:** item #2 (report degraded watchdog state to IT) if a shared
+  reporting channel is built.
+
+### 21. `RecordingService._workers`/`_contexts` mutated without a lock across threads
+- **What:** `app/core/recording_service/service.py` `add_worker`/`remove_worker`
+  (hot-plug thread) vs. `health_report()`/`total_stored_duration_seconds()`
+  (health-watchdog thread, IPC/UI poll thread) — no lock, unlike
+  `segment_index.py` which is correctly locked.
+- **Why:** ADR-0009 requires thread-safety at the facade/event-bus boundary;
+  this is a genuine gap — a hot monitor unplug/replug racing a health check or
+  UI poll can throw `RuntimeError: dictionary changed size during iteration`
+  (uncaught on the IPC path) or silently return a stale/partial worker view.
+- **Fix direction:** add the same lock pattern already used in `segment_index.py`
+  around `_workers`/`_contexts` mutation and iteration.
+- **Depends on:** none — self-contained, but higher effort/risk (concurrency
+  change), do after Wave 1/2 are verified.
+
+### 22. `LivePreviewService` has no crash/restart watchdog (unlike the real recorder)
+- **What:** `live_preview_service.py:168-198` — reader thread just exits on EOF/
+  exception with a `debug` log; no `on_crash` callback, no auto-relaunch, unlike
+  `FFmpegRecorderAdapter`'s `_watchdog_loop`.
+- **Why:** A dead per-monitor preview process leaves that tile frozen in the UI
+  with no error state — misleading, though it doesn't affect actual recorded
+  footage.
+- **Fix direction:** add the same watchdog/relaunch pattern `recorder_adapter.py`
+  already has.
+- **Depends on:** none.
+
+### 23. MJPEG stream handler's catch-all logs nothing
+- **What:** `mjpeg_server_adapter.py:275-276` — `except Exception: pass` with a
+  comment but zero logging, the only such case in the codebase.
+- **Why:** A genuine bug (not just a client disconnect) is fully invisible.
+- **Fix direction:** add `logger.debug(...)` at minimum, matching the rest of
+  the codebase's catch-all convention.
+- **Depends on:** none — one-line fix.
+
+### 24. `DeliveryApi._active_operator` masks request-store errors as "no active operator"
+- **What:** `app/core/api/delivery_api.py:138-148` — swallows any exception from
+  `load_all()`, silently delivering clips to a folder path missing the operator
+  segment.
+- **Why:** Clips land in the wrong/shared delivery folder with no indication why.
+- **Fix direction:** log at `warning` with `exc_info=True` at minimum; consider
+  surfacing a delivery-path warning in the UI when this fallback triggers.
+- **Depends on:** none.
+
+### 25. Device identity key ACL hardening is silent best-effort
+- **What:** `app/adapters/browser_local/identity.py:101-133` — `icacls` failure
+  to restrict the Ed25519 private key file's ACL only logs a `warning`, no
+  periodic re-check.
+- **Why:** On profiles where `icacls` fails (policy/redirected profile), the
+  private signing key can keep a broader inherited ACL indefinitely.
+- **Fix direction:** re-attempt the ACL restriction on each subsequent app start
+  (cheap, idempotent) rather than only at key-creation time, so a transient
+  failure self-heals instead of persisting forever.
+- **Depends on:** none.
+
+### 26. `BatchClipAnalyzer` drops failed clips with no retry or dead-letter
+- **What:** `app/core/analytics/batch_clip_analyzer.py:77-86` — per-clip analysis
+  exceptions are `warning`-logged and the clip is dropped, no requeue.
+- **Why:** A transient failure (locked file right after a crash/restart cycle)
+  permanently skips that clip's auto-analysis with nothing downstream aware.
+- **Fix direction:** requeue with a small retry budget, or persist a "failed
+  analysis" marker so a later pass can retry — matches the recorder's own
+  retry/backoff philosophy elsewhere in the codebase.
+- **Depends on:** none.
+
 ## Completed
 
 ### Track R2 — recorder supervision: ctypes orphan-fix, M1 clip-engine quick win, M5 hardening
@@ -225,11 +453,11 @@ clear trigger to pick it up.
   introduced and there is no second supervision implementation to later remove (this is why the
   original item #9 here, "remove the legacy Python watchdog after `RECORDER_GUARD=auto` proves
   stable," no longer applies — that flag never ships).
-- **Context:** Decision record: [ADR-0016](project/docs/editing/adr/ADR-0016-recorder-supervision-ctypes-not-rust.md)
-  (ctypes not Rust) and [ADR-0017](project/docs/editing/adr/ADR-0017-adr0007-sla-verdict-confirmed.md)
+- **Context:** Decision record: [ADR-0016](docs/architecture/adr/ADR-0016-recorder-supervision-ctypes-not-rust.md)
+  (ctypes not Rust) and [ADR-0017](docs/architecture/adr/ADR-0017-adr0007-sla-verdict-confirmed.md)
   (ADR-0007 SLA gate: PASS, Track R3 not triggered — zero-copy capture CPU is 1.06-1.19% of this
   16-core machine per monitor, well under the 5% SLA). Full telemetry and methodology:
-  `project/docs/migration/track-r2-baseline.md` and `track-r2-m2a-decision.md`. New tests:
+  `docs/migration/track-r2-baseline.md` and `track-r2-m2a-decision.md`. New tests:
   `test_process_guard.py::TestResumeSuspendedProcess`, `test_parity_clip_port.py`,
   `test_clip_builder_condition_regression.py`, plus extensions to `test_proc_telemetry.py` and
   `test_bench_report.py`.

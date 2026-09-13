@@ -1,129 +1,138 @@
-# setup_env.ps1
-# Crea o repara el entorno virtual de Python para ESTE PC.
-#
-# El venv vive FUERA de OneDrive (en %LOCALAPPDATA%\The Watcher\venv) a proposito:
-# un venv contiene rutas absolutas y binarios atados a una maquina/usuario concretos,
-# asi que NO debe sincronizarse entre PCs. Cada equipo crea el suyo.
-#
-# Uso:  powershell -ExecutionPolicy Bypass -File setup_env.ps1
-#       (o boton derecho -> "Ejecutar con PowerShell")
+<#
+.SYNOPSIS
+    Provisions The Watcher's per-machine Python environment with uv.
 
+.DESCRIPTION
+    The venv remains outside OneDrive at %LOCALAPPDATA%\The Watcher\venv.
+    uv owns Python discovery/install (3.13) and dependency synchronization from
+    project\requirements.txt, so a missing or broken system `python` on PATH is
+    no longer a prerequisite.
+
+    The Rust segment engine is optional. A failed native build leaves the
+    FFmpeg fallback available and does not fail setup.
+#>
+
+[CmdletBinding()]
+param(
+    [switch]$Recreate
+)
+
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# -- Rutas --------------------------------------------------------------------
-$venvPath   = Join-Path $env:LOCALAPPDATA "The Watcher\venv"
+$repoDir = $PSScriptRoot
+$venvPath = Join-Path $env:LOCALAPPDATA "The Watcher\venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
-$reqFile    = Join-Path $PSScriptRoot "project\requirements.txt"
+$requirements = Join-Path $repoDir "project\requirements.txt"
+$crateDir = Join-Path $repoDir "project\native\watcher_segments"
 
-# -- 1. Localizar Python 3.13+ ------------------------------------------------
-function Test-PyVersion($exe) {
-    try { $v = & $exe --version 2>&1 } catch { return $false }
-    # Acepta 3.13..3.19 y 3.20+ (por si sube de version)
-    return ($v -match "Python 3\.(1[3-9]|[2-9]\d)")
+$uv = Get-Command uv -ErrorAction SilentlyContinue
+if ($null -eq $uv) {
+    throw "No se encontró uv. Instálalo con: winget install --id=astral-sh.uv -e"
+}
+if (-not (Test-Path -LiteralPath $requirements)) {
+    throw "No se encontró '$requirements'."
 }
 
-$python = $null
+function Test-VenvHealthy {
+    if (-not (Test-Path -LiteralPath $venvPython)) {
+        return $false
+    }
 
-# El py launcher es lo mas fiable en Windows: pedimos explicitamente 3.13+
-$pyLauncher = Get-Command py -ErrorAction SilentlyContinue
-if ($pyLauncher) {
-    $cand = & $pyLauncher.Source -3 -c "import sys; print(sys.executable)" 2>$null
-    if ($cand -and (Test-PyVersion $cand)) { $python = $cand }
-}
-if (-not $python) {
-    $cmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($cmd -and (Test-PyVersion $cmd.Source)) { $python = $cmd.Source }
-}
-if (-not $python) {
-    $locations = @(
-        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe",
-        "$env:ProgramFiles\Python313\python.exe",
-        "C:\Python313\python.exe"
-    )
-    foreach ($loc in $locations) {
-        if ((Test-Path $loc) -and (Test-PyVersion $loc)) { $python = $loc; break }
+    try {
+        & $venvPython --version *> $null
+        return $LASTEXITCODE -eq 0
+    }
+    catch {
+        return $false
     }
 }
-if (-not $python) {
-    Write-Error "No se encontro Python 3.13+. Instalalo desde https://python.org y vuelve a ejecutar este script."
-    exit 1
-}
-Write-Host "Python: $python ($(& $python --version 2>&1))" -ForegroundColor Cyan
 
-# -- 2. Validar venv existente; recrear si esta roto --------------------------
-# En vez de adivinar por el nombre de usuario, simplemente ejecutamos el python
-# del venv. Si su Python base ya no existe (otro PC/usuario), fallara y recreamos.
-$venvOk = $false
-if (Test-Path $venvPython) {
-    & $venvPython --version *> $null
-    if ($LASTEXITCODE -eq 0) { $venvOk = $true }
-}
-if ((Test-Path $venvPath) -and (-not $venvOk)) {
-    Write-Host "El venv existente esta roto -> recreando..." -ForegroundColor Yellow
-    Remove-Item $venvPath -Recurse -Force
+Write-Host "uv: $(& $uv.Source --version)" -ForegroundColor Cyan
+Write-Host "Asegurando Python 3.13 mediante uv..." -ForegroundColor Cyan
+& $uv.Source python install 3.13
+if ($LASTEXITCODE -ne 0) {
+    throw "uv no pudo instalar o localizar Python 3.13."
 }
 
-# -- 3. Crear venv si no existe -----------------------------------------------
-if (-not (Test-Path $venvPython)) {
-    Write-Host "Creando entorno virtual en $venvPath ..." -ForegroundColor Cyan
-    & $python -m venv $venvPath
-    if ($LASTEXITCODE -ne 0) { Write-Error "Fallo la creacion del venv."; exit 1 }
+$healthy = Test-VenvHealthy
+if ($Recreate -or -not $healthy) {
+    $venvArgs = @("venv", "--python", "3.13")
+    if (Test-Path -LiteralPath $venvPath) {
+        $venvArgs += "--clear"
+    }
+    $venvArgs += $venvPath
+
+    Write-Host "Creando/reparando venv con uv en '$venvPath'..." -ForegroundColor Cyan
+    & $uv.Source @venvArgs
+    if ($LASTEXITCODE -ne 0 -or -not (Test-VenvHealthy)) {
+        throw "uv no pudo crear un venv saludable en '$venvPath'."
+    }
+}
+else {
+    Write-Host "Venv existente válido: $venvPython" -ForegroundColor DarkGray
 }
 
-# -- 4. Instalar dependencias -------------------------------------------------
-Write-Host "Actualizando pip..." -ForegroundColor Cyan
-& $venvPython -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) { Write-Error "Fallo al actualizar pip."; exit 1 }
-
-if (Test-Path $reqFile) {
-    Write-Host "Instalando requirements.txt..." -ForegroundColor Cyan
-    # requirements.txt puede venir en UTF-16 (BOM) generado en otro PC.
-    # Get-Content -Raw detecta el BOM automaticamente; lo reescribimos a UTF-8
-    # para que pip no se atragante.
-    $tmpReq = Join-Path $env:TEMP ("watcher_req_{0}.txt" -f $PID)
-    (Get-Content $reqFile -Raw) | Set-Content $tmpReq -Encoding utf8
-    & $venvPython -m pip install -r $tmpReq
-    $code = $LASTEXITCODE
-    Remove-Item $tmpReq -ErrorAction SilentlyContinue
-    if ($code -ne 0) { Write-Error "Fallo la instalacion de requirements.txt."; exit 1 }
+# requirements.txt is an input manifest, not a fully compiled lockfile (for
+# example, it does not enumerate every transitive onnxruntime dependency).
+# `uv pip install -r` resolves that complete graph. `uv pip sync` would treat
+# this file as a final package list and leave required transitive packages out.
+Write-Host "Sincronizando project\\requirements.txt con uv..." -ForegroundColor Cyan
+& $uv.Source pip install --python $venvPython -r $requirements
+if ($LASTEXITCODE -ne 0) {
+    throw "uv no pudo instalar '$requirements'."
 }
 
-# -- 5. Motor nativo Rust (watcher_segments) — OPCIONAL, no fatal ------------
-# Extension PyO3 (.pyd) que acelera el ensamblado de clips (remux/concat TS->MP4).
-# Es OPCIONAL: si falta el toolchain Rust o la compilacion falla, la app usa el
-# fallback FFmpeg (gate ENGINE_READY). Por eso avisamos y continuamos en vez de
-# abortar la preparacion del entorno.
-$crateDir = Join-Path $PSScriptRoot "project\native\watcher_segments"
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Write-Host "Rust (cargo) no encontrado -> se omite el motor nativo; se usara el fallback FFmpeg." -ForegroundColor Yellow
-    Write-Host "  (Opcional) Instala Rust desde https://rustup.rs para acelerar el ensamblado de clips." -ForegroundColor DarkGray
-} elseif (Test-Path $crateDir) {
-    Write-Host "Compilando el motor nativo Rust (watcher_segments)..." -ForegroundColor Cyan
-    & $venvPython -m pip install --upgrade maturin --quiet
-    if ($LASTEXITCODE -eq 0) {
-        $wheelOut = Join-Path $env:TEMP "tw_wheels"
+# Native Rust engine — optional. Use uv for maturin/wheel installation too, so
+# this script never falls back to a globally installed pip.
+$cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+if ((Test-Path -LiteralPath (Join-Path $cargoBin "cargo.exe")) -and ($env:Path -notlike "*$cargoBin*")) {
+    # rustup adds this for new shells, but provisioning often runs immediately
+    # after installation in the same PowerShell session.
+    $env:Path = "$cargoBin;$env:Path"
+}
+$cargo = Get-Command cargo -ErrorAction SilentlyContinue
+if ($null -eq $cargo -or -not (Test-Path -LiteralPath $crateDir)) {
+    Write-Host "Rust/cargo no disponible; se usará el fallback FFmpeg para segmentos." -ForegroundColor Yellow
+}
+else {
+    Write-Host "Compilando el motor nativo Rust (opcional)..." -ForegroundColor Cyan
+    try {
+        & $uv.Source pip install --python $venvPython maturin
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv no pudo instalar maturin."
+        }
+
+        $wheelDir = Join-Path $env:TEMP "the-watcher-wheels"
+        New-Item -ItemType Directory -Force -Path $wheelDir | Out-Null
         Push-Location $crateDir
         try {
-            # `maturin build --interpreter` (no `develop`) evita que maturin
-            # autodetecte un venv ajeno (p.ej. un .venv roto en el repo).
-            & $venvPython -m maturin build --release --interpreter $venvPython --out $wheelOut
-            if ($LASTEXITCODE -eq 0) {
-                $wheel = Get-ChildItem $wheelOut -Filter "watcher_segments-*.whl" -ErrorAction SilentlyContinue |
-                    Sort-Object LastWriteTime | Select-Object -Last 1
-                if ($wheel) {
-                    & $venvPython -m pip install --force-reinstall --no-deps $wheel.FullName --quiet
-                    if ($LASTEXITCODE -eq 0) { Write-Host "Motor nativo Rust instalado." -ForegroundColor Green }
-                    else { Write-Host "No se pudo instalar el wheel nativo -> fallback FFmpeg." -ForegroundColor Yellow }
-                }
-            } else {
-                Write-Host "Fallo la compilacion del motor nativo -> fallback FFmpeg." -ForegroundColor Yellow
+            & $venvPython -m maturin build --release --interpreter $venvPython --out $wheelDir
+            if ($LASTEXITCODE -ne 0) {
+                throw "maturin no pudo compilar watcher_segments."
             }
-        } finally { Pop-Location }
+        }
+        finally {
+            Pop-Location
+        }
+
+        $wheel = Get-ChildItem -LiteralPath $wheelDir -Filter "watcher_segments-*.whl" |
+            Sort-Object LastWriteTime | Select-Object -Last 1
+        if ($null -eq $wheel) {
+            throw "No se encontró el wheel de watcher_segments."
+        }
+        & $uv.Source pip install --python $venvPython --reinstall --no-deps $wheel.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv no pudo instalar watcher_segments."
+        }
+        Write-Host "Motor nativo Rust instalado." -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "No se pudo preparar el motor nativo: $($_.Exception.Message) Se usará FFmpeg."
     }
 }
 
 Write-Host ""
-Write-Host "Listo. venv preparado para este PC." -ForegroundColor Green
-Write-Host "  Ubicacion: $venvPath" -ForegroundColor Green
-Write-Host "  Interprete para VS Code: $venvPython" -ForegroundColor Green
+Write-Host "Entorno listo." -ForegroundColor Green
+Write-Host "  Python: $venvPython" -ForegroundColor Green
+Write-Host "  Ejecuta: .\Start-TheWatcher.ps1" -ForegroundColor Green

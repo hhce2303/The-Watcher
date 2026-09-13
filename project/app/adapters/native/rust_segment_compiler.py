@@ -2,7 +2,7 @@
 
 The Rust crate ``watcher_segments`` is compiled to a Python extension
 (``.pyd``) via PyO3/maturin (see ``native/watcher_segments/`` and
-docs/editing/adr/ADR-0006-rust-segment-engine.md).  This module wraps it and
+docs/architecture/adr/ADR-0006-rust-segment-engine.md).  This module wraps it and
 provides :func:`make_segment_compiler`, which returns the Rust engine when it is
 present **and** advertises ``ENGINE_READY = True``, otherwise the FFmpeg fallback.
 

@@ -1,7 +1,7 @@
 """Port: lossless compilation/concatenation of media segments into one MP4.
 
 The default engine is the native Rust crate (``watcher_segments`` .pyd); FFmpeg
-is the fallback.  See docs/editing/adr/ADR-0006-rust-segment-engine.md.
+is the fallback.  See docs/architecture/adr/ADR-0006-rust-segment-engine.md.
 
 This is the low-level *stream-copy* seam (no decode/scale/encode).  Anything that
 needs re-encoding (multi-monitor grid, frame-accurate boundary GOP) stays in the

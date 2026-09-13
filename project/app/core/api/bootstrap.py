@@ -2,8 +2,10 @@
 
 ``build_api_layer`` wires one :class:`EventBus` and the facades over the services
 that ``main.py`` already constructs, and returns them in an :class:`ApiLayer`.
-Both the QML adapters (M2) and the ``adapters/ipc`` channel (M3) drive this exact
-object — one facade set, interchangeable input adapters.
+The named-pipe ``adapters/ipc`` channel and the constrained browser-local
+adapter drive this exact object — one facade set, interchangeable input
+adapters. The browser adapter remains read-only and maps its own opaque IDs;
+it never exposes the named-pipe router.
 
 The heavier "build the whole recording stack headless, by role" belongs to the
 daemon entrypoint (M4); this module takes already-built services so adopting it

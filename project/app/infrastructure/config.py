@@ -37,6 +37,14 @@ def _resolve_dir(env_key: str, default: str) -> Path:
     return p if p.is_absolute() else _BASE / raw
 
 
+def _env_flag(key: str, default: bool = False) -> bool:
+    """Parse an explicit boolean environment flag without truthy-string traps."""
+    value = os.getenv(key)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Settings:
     """
     Application configuration loaded from environment variables / .env file.
@@ -76,7 +84,7 @@ class Settings:
     # chain fails to probe), or "legacy" (always hwdownload to system memory).
     # Zero-copy keeps frames on the GPU (hwmap→vpp_qsv / hwmap→CUDA) instead of
     # downloading every frame before scaling — ~66% less CPU/monitor on QSV.
-    # See project/docs/migration/ffmpeg-pipeline-optimization-research.md §3.1.
+    # See docs/migration/ffmpeg-pipeline-optimization-research.md §3.1.
     capture_pipeline: str = os.getenv("CAPTURE_PIPELINE", "auto")
     # CLIP_ENGINE (Track R2 M1) — "auto"/"rust": route the single-monitor clip
     # path (FFmpegTrimAdapter._build_single, byte-identical to compile_clip)
@@ -191,6 +199,40 @@ class Settings:
     # Bind host is always 127.0.0.1 (localhost-only); never reachable over LAN.
     preview_http_host: str = os.getenv("PREVIEW_HTTP_HOST", "127.0.0.1")
     preview_http_port: int = int(os.getenv("PREVIEW_HTTP_PORT", "8787"))
+
+    # â”€â”€ Daily SIG Systems browser-local channel (disabled until enrolled) â”€â”€
+    # This is deliberately separate from the Tauri named-pipe IPC and the
+    # operator MJPEG helper above. It always binds loopback in the adapter; no
+    # setting may widen it to a LAN interface.
+    browser_local_enabled: bool = _env_flag("BROWSER_LOCAL_ENABLED", False)
+    # Deliberately not configurable: Daily's CSP and postMessage contract pin
+    # this origin. A different port would create a second, unreviewed trust
+    # boundary instead of a supported deployment variant.
+    browser_local_port: int = 8765
+    browser_local_parent_origin: str = os.getenv(
+        "BROWSER_LOCAL_PARENT_ORIGIN", "https://daily.sig.systems"
+    ).rstrip("/")
+    browser_local_issuer: str = os.getenv("BROWSER_LOCAL_ISSUER", "daily.sig.systems")
+    browser_local_audience: str = os.getenv("BROWSER_LOCAL_AUDIENCE", "the-watcher-local")
+    # Pin the signing-key id as well as its public key so an unexpected key
+    # rotation cannot silently become trusted by a local daemon.
+    browser_local_issuer_kid: str = os.getenv("BROWSER_LOCAL_ISSUER_KID", "")
+    # A device is enrolled against exactly one SIG site. Zero means unconfigured
+    # and fails closed when the browser adapter is enabled.
+    browser_local_site_id: int = int(os.getenv("BROWSER_LOCAL_SITE_ID", "0"))
+    browser_local_cert_file: str = os.getenv("BROWSER_LOCAL_CERT_FILE", "")
+    browser_local_key_file: str = os.getenv("BROWSER_LOCAL_KEY_FILE", "")
+    browser_local_issuer_public_key_file: str = os.getenv(
+        "BROWSER_LOCAL_ISSUER_PUBLIC_KEY_FILE", ""
+    )
+    browser_local_data_dir: Path = _resolve_dir(
+        "BROWSER_LOCAL_DATA_DIR",
+        os.path.join(
+            os.environ.get("LOCALAPPDATA", r"C:\\Users\\Default\\AppData\\Local"),
+            "The Watcher",
+            "browser_local",
+        ),
+    )
 
     # ── OneDrive delivery (folder + share link) ───────────────────────────────
     # ONEDRIVE_ROOT — local root the LocalShareAdapter operates on.  Defaults to

@@ -1,7 +1,7 @@
 """Editor domain — evidence-reel timeline model and sequencer.
 
 Pure domain logic (no Qt / FFmpeg / Rust).  Backs the IT editing tab's
-multi-clip "evidence reel" (see docs/editing/goals.md, R-1).
+multi-clip "evidence reel" (see docs/architecture/goals.md, R-1).
 """
 from __future__ import annotations
 

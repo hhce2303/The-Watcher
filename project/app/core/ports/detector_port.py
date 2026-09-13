@@ -3,7 +3,7 @@
 Declared now, implemented later (Fase 2 mock adapter → Fase 3 ONNX/`ort`).  The
 recorder must never block on inference, so implementations run out-of-process or
 on a worker thread and deliver results via ``subscribe`` (see
-docs/editing/adr/ADR-0004-ai-detection-seams.md).
+docs/architecture/adr/ADR-0004-ai-detection-seams.md).
 """
 from __future__ import annotations
 
