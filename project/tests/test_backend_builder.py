@@ -38,6 +38,7 @@ def _recording_settings(tmp_path):
         segment_dir=tmp_path / "segments",
         video_codec="h264",
         clip_engine="ffmpeg",
+        live_view_enabled=False,
         capture_source="desktop",
         capture_backend="auto",
         capture_pipeline="auto",
