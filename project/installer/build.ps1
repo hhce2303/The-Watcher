@@ -60,16 +60,14 @@ if ($NeedsVenvSetup) {
     python -m venv $CleanVenv
     Write-Host "Installing packages into clean venv..." -ForegroundColor Yellow
     & $CleanPip install --upgrade pip --quiet
-    & $CleanPip install `
-        "screeninfo==0.8.1" `
-        "psutil==7.2.2" `
-        "loguru==0.7.3" `
-        "python-dotenv==1.2.2" `
-        "pydantic==2.13.3" `
-        "websockets==16.0" `
-        "pyinstaller==6.20.0" `
-        "pyinstaller-hooks-contrib==2026.4" `
-        --quiet
+    # Install from requirements.txt (single source of truth) rather than a
+    # hand-picked subset here -- a hand-picked list silently drifts out of
+    # sync as adapters gain new dependencies (e.g. aiohttp/PyJWT/pywin32 for
+    # the browser-local/live-view-lan/IPC adapters were missing from this
+    # list even though app/main.py imports them unconditionally, which
+    # PyInstaller only surfaces as a runtime ModuleNotFoundError, not a build
+    # failure, the first time that code path actually executes).
+    & $CleanPip install -r (Join-Path $ProjectRoot "requirements.txt") --quiet
     Write-Host "Clean venv ready." -ForegroundColor Green
 } else {
     Write-Host "Using existing clean build venv at $CleanVenv" -ForegroundColor Green
@@ -273,6 +271,7 @@ if ($IsccPath -and (Test-Path $IssScript)) {
 Write-Host ""
 Write-Host "=== Build finished (v$Version) ===" -ForegroundColor Cyan
 Write-Host "  Executable     : dist\The Watcher\The Watcher.exe"
+Write-Host "  Enrollment CLI : dist\The Watcher\The Watcher Enroll.exe"
 Write-Host "  ZIP (portable) : dist\The Watcher-$Version.zip"
 if (Test-Path (Join-Path $ProjectRoot "dist\Setup-The Watcher.exe")) {
     Write-Host "  Installer      : dist\Setup-The Watcher.exe" -ForegroundColor Green
@@ -280,3 +279,4 @@ if (Test-Path (Join-Path $ProjectRoot "dist\Setup-The Watcher.exe")) {
 Write-Host ""
 Write-Host "  Quick install (double-click): dist\The Watcher\Setup.bat"
 Write-Host "  Or via PowerShell           : dist\The Watcher\install.ps1" -ForegroundColor Yellow
+Write-Host "  Unattended fleet deploy     : coloca 'site.env' junto al exe antes de correr Setup.bat" -ForegroundColor Yellow
