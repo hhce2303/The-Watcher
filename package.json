@@ -10,7 +10,7 @@
     "tauri": "tauri",
     "test": "vitest run",
     "lint": "eslint src",
-    "gen:dto": "uv run --python \"%LOCALAPPDATA%\\The Watcher\\venv\\Scripts\\python.exe\" python scripts/gen_dto_ts.py && json2ts --input src/types/dto.schema.json --output src/types/dto.gen.ts --bannerComment \"\" --unreachableDefinitions --additionalProperties false",
+    "gen:dto": "node scripts/run_gen_dto.cjs && json2ts --input src/types/dto.schema.json --output src/types/dto.gen.ts --bannerComment \"\" --unreachableDefinitions --additionalProperties false",
     "gen:dto:check": "npm run gen:dto && git diff --exit-code src/types/dto.gen.ts"
   },
   "dependencies": {
