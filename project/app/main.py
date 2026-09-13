@@ -49,6 +49,7 @@ from app.adapters.ws.request_server import ClipRequestServer
 from app.adapters.ws.request_client import ClipRequestClient
 from app.adapters.preview_server.mjpeg_server_adapter import MjpegPreviewServerAdapter
 from app.adapters.browser_local import BrowserLocalAdapter
+from app.adapters.live_view_lan import LiveViewLanAdapter
 from app.core.monitor_detection.service import MonitorDetectionService
 # LivePreviewService removed — preview is now embedded in the recorder FFmpeg process
 
@@ -337,6 +338,19 @@ def _build_browser_local_adapter(
     """
     if user_config.role != OPERATOR or not settings.browser_local_enabled:
         return None
+
+
+def _build_live_view_adapter(
+    user_config: UserConfig, settings: Settings, api: ApiLayer
+) -> Optional[LiveViewLanAdapter]:
+    """Build the remote LAN surface only for the always-on Operator daemon."""
+    if user_config.role != OPERATOR or not settings.live_view_enabled:
+        return None
+    try:
+        return LiveViewLanAdapter(settings, api)
+    except Exception as exc:  # noqa: BLE001 -- never sacrifice recording for live view
+        logger.error("[live-view] unavailable: {}", exc)
+        return None
     try:
         return BrowserLocalAdapter(settings, api)
     except Exception as exc:  # noqa: BLE001 -- recording must survive a bad browser configuration
@@ -351,6 +365,7 @@ def _start_recording_services(
     settings: Settings,
     preview_server: Optional[MjpegPreviewServerAdapter],
     browser_local: Optional[BrowserLocalAdapter],
+    live_view: Optional[LiveViewLanAdapter],
 ) -> None:
     """Start the operator preview server (if applicable) and every backend service.
 
@@ -372,6 +387,8 @@ def _start_recording_services(
         preview_server.start()
     if browser_local is not None:
         browser_local.start()
+    if live_view is not None:
+        live_view.start()
 
     # ── Start recording ───────────────────────────────────────────────
     # Operator always records; IT only if its autorecord toggle is on;
@@ -640,6 +657,7 @@ def _make_stop_backend_cb(
     req_client: Optional[ClipRequestClient],
     preview_server: Optional[MjpegPreviewServerAdapter],
     browser_local: Optional[BrowserLocalAdapter],
+    live_view: Optional[LiveViewLanAdapter],
 ) -> Callable[[], None]:
     """Build the full-backend teardown callback (stops FFmpeg, no orphans — TD-3)."""
 
@@ -671,6 +689,8 @@ def _make_stop_backend_cb(
             preview_server.stop()
         if browser_local is not None:
             browser_local.stop()
+        if live_view is not None:
+            live_view.stop()
 
     return _stop_backend
 
@@ -767,6 +787,7 @@ def main() -> None:
     browser_local = _build_browser_local_adapter(
         user_config, settings, api, clips_dir, event_clips_dir
     )
+    live_view = _build_live_view_adapter(user_config, settings, api)
 
     req_server, req_client = _wire_request_system(user_config, settings, api)
     _wire_failure_callbacks(backend, api, is_operator_daemon=(user_config.role == OPERATOR))
@@ -775,7 +796,7 @@ def main() -> None:
     api.settings.set_autorecord_cb(_make_autorecord_cb(recording_service))
 
     _stop_backend = _make_stop_backend_cb(
-        backend, detection_service, req_server, req_client, preview_server, browser_local
+        backend, detection_service, req_server, req_client, preview_server, browser_local, live_view
     )
 
     # ── Role-conditional topology (ADR-0010): headless daemon / sidecar ──
@@ -808,7 +829,7 @@ def main() -> None:
             return  # shutdown raced startup — nothing to do
         try:
             _start_recording_services(
-                backend, user_config, detection_service, settings, preview_server, browser_local
+                backend, user_config, detection_service, settings, preview_server, browser_local, live_view
             )
             _recover_startup_clips(backend, settings)
         except Exception:

@@ -84,7 +84,9 @@ def build_worker(
         on_segment_ready=buffer.register_segment,
         on_crash=supervisor.notify_crash,
         preview_path=preview_path,
-        preview_fps=2,
+        # The LAN adapter fans out this same recorder-owned JPEG; it must not
+        # launch another capture process merely to provide Supervisor fluency.
+        preview_fps=10 if settings.live_view_enabled else 2,
         preview_width=1280,
     )
     recorder.set_monitor(monitor)

@@ -20,5 +20,12 @@ Template for a new entry:
 
 ---
 
+## FB-001
+- **Date:** 2026-09-13
+- **Source:** product owner
+- **Raw request:** "supervisores ven heartbeats de PCs Operator y pantallas en tiempo real"
+- **Derived story:** US-001
+- **Status:** converted
+
 _No entries yet — this is a fresh scaffold. Append the first `FB-001` above this line
 the next time a real request comes in._
