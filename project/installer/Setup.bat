@@ -20,8 +20,20 @@ if not exist "%~dp0The Watcher.exe" (
 
 :: Launch the PowerShell installer with execution policy bypass so it works
 :: on any Windows machine regardless of the user's ExecutionPolicy setting.
-powershell.exe -NoProfile -ExecutionPolicy Bypass ^
-    -File "%~dp0install.ps1"
+:: If a "site.env" file sits next to this Setup.bat, run the unattended
+:: operator deploy automatically (pre-seeded role, no prompts except the
+:: NAS path -- see docs/migration/deploy-operator-daemon.md).
+set _envfile=
+if exist "%~dp0site.env" set _envfile=%~dp0site.env
+
+if defined _envfile (
+    echo  Modo desatendido detectado ^(site.env encontrado^).
+    powershell.exe -NoProfile -ExecutionPolicy Bypass ^
+        -File "%~dp0install.ps1" -Unattended -EnvFile "%_envfile%"
+) else (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass ^
+        -File "%~dp0install.ps1"
+)
 
 set _exit=%errorlevel%
 echo.
