@@ -62,3 +62,4 @@ src-tauri/target/
 
 # DTO codegen intermediate (npm run gen:dto) — dto.gen.ts is the checked-in artifact
 src/types/dto.schema.json
+.worktrees/
