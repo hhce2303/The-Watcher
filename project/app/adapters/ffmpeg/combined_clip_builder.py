@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import re
 import subprocess
 import threading
 from collections import defaultdict
@@ -18,11 +19,17 @@ from app.adapters.ffmpeg.encoder_selector import (
     quality_flags,
     tag_for_encoder,
 )
-from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg
+from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg, resolve_ffprobe
 from app.adapters.ffmpeg.process_guard import run_batched_ffmpeg
 
 
-def _grid2_filter(n: int, cell: str = "1280x720") -> tuple[str, str]:
+def _grid2_filter(
+    n: int,
+    cell: str = "1280x720",
+    *,
+    duration_seconds: int = 3600,
+    tail_pad_seconds: int = 10,
+) -> tuple[str, str]:
     """Build a filter_complex that arranges n clips in a fixed 2-column grid.
 
     Layout rules
@@ -46,7 +53,17 @@ def _grid2_filter(n: int, cell: str = "1280x720") -> tuple[str, str]:
 
     parts: list[str] = []
     for i in range(n):
-        parts.append(f"[{i}:v]scale={_CELL},setpts=PTS-STARTPTS[v{i}]")
+        # MPEG-TS/concat sources often carry a small, different initial PTS
+        # offset per monitor.  Normalising each input alone makes the grid end
+        # at the shortest source (typically 2--4 seconds early).  A short
+        # clone-pad absorbs that transport offset and trim gives the published
+        # grid one deterministic wall-clock duration.  Inputs substantially
+        # shorter than a window are rejected before this filter is reached.
+        parts.append(
+            f"[{i}:v]scale={_CELL},setpts=PTS-STARTPTS,"
+            f"tpad=stop_mode=clone:stop_duration={tail_pad_seconds},"
+            f"trim=duration={duration_seconds},setpts=PTS-STARTPTS[v{i}]"
+        )
 
     rows = (n + 1) // 2
     row_labels: list[str] = []
@@ -101,12 +118,14 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         raw_dir: Path,
         output_dir: Path,
         monitor_count: int,
+        monitor_indices: "list[int] | None" = None,
         timestamp_adapter=None,
         codec: str = "h264",
         cell_width: int = 1280,
         cell_height: int = 720,
         quality: int = 27,
         window_minutes: int = 60,
+        duration_tolerance_seconds: int = 10,
     ) -> None:
         """
         Parameters
@@ -130,20 +149,25 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         self._raw_dir    = raw_dir
         self._output_dir = output_dir
         self._n          = monitor_count
+        self._expected_monitor_indices = frozenset(
+            monitor_indices if monitor_indices is not None else range(monitor_count)
+        )
         self._ts_adapter = timestamp_adapter
         self._codec      = codec
         self._cell       = f"{cell_width}x{cell_height}"
         self._quality    = quality
         self._window_minutes = window_minutes
+        self._window_seconds = window_minutes * 60
+        self._duration_tolerance_seconds = duration_tolerance_seconds
 
         self._lock      = threading.Lock()
         self._submitted: set[str] = set()       # window keys already queued/built
         self._seen_windows: set[str] = set()    # every window key a clip has arrived for
         # window_key -> per-monitor raw clip paths reporting into that window.
-        # Populated directly from on_clip_ready/recover() callback data — NOT by
-        # globbing/re-parsing filenames, since per-monitor filenames now embed
-        # each monitor's own real start time and no longer share a common prefix.
-        self._window_clips: dict[str, set[Path]] = defaultdict(set)
+        # Populated directly from on_clip_ready/recover() callback data. Paths
+        # are keyed by monitor index, so a duplicate callback replaces only its
+        # own current raw output and cannot masquerade as another screen.
+        self._window_clips: dict[str, dict[int, Path]] = defaultdict(dict)
         # window_key -> earliest real start among monitors reporting into it —
         # used as the combined clip's own filename/overlay timestamp.
         self._window_real_start: dict[str, datetime] = {}
@@ -160,18 +184,17 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def _local_output(self, real_start: datetime) -> Path:
+    def _local_output(self, window_start: datetime) -> Path:
         """Combined clip path with LOCAL time in the filename.
 
-        ``real_start`` is the earliest real per-monitor segment start time for
-        this window (UTC) — the combined clip shown to users should use local
-        time so the filename matches what they see on the system clock.
+        ``window_start`` is the canonical UTC boundary shared by every monitor.
+        The combined clip shown to users uses that boundary in local time.
 
         Example (UTC-5 machine):
-            real_start  2026-05-30 05:00:03 UTC
-            output      clips/2026-05-30_00-00-03.mp4
+            window_start  2026-05-30 05:00:00 UTC
+            output        clips/2026-05-30_00-00-00.mp4
         """
-        local_dt = real_start.astimezone()       # system local timezone
+        local_dt = window_start.astimezone()     # system local timezone
         local_key = local_dt.strftime("%Y-%m-%d_%H-%M-%S")
         return self._output_dir / f"{local_key}.mp4"
 
@@ -181,10 +204,9 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         Runs in the individual builder's executor thread — must be thread-safe.
         ``window_key`` is the shared floor-based bucket string (identical across
         every monitor reporting into the same hour, e.g. "2026-05-31_10-00-00");
-        ``real_start`` is THIS monitor's own real segment start time (per-monitor
-        filenames now embed real start, not the floor, so they no longer share a
-        common string prefix — the combining logic below never re-derives
-        ``window_key``/paths from filenames, only from these callback args).
+        ``real_start`` is THIS monitor's own real segment start time; it is used
+        for the timestamp overlay. Raw names use the shared ``window_key`` and
+        the monitor suffix, which the completeness guard verifies below.
 
         A window is combined EXACTLY ONCE, and only after it is COMPLETE. The
         per-monitor builder rebuilds its clip on every new segment, so this
@@ -197,10 +219,18 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         Re-encoding the 4K grid once per completed window (instead of on every
         segment) also keeps CPU impact low.
         """
+        monitor_index = self._monitor_index_from_path(clip_path)
+        if monitor_index is None:
+            logger.warning("[combined] Ignoring raw clip with invalid monitor suffix: {}", clip_path.name)
+            return
+        if monitor_index not in self._expected_monitor_indices:
+            logger.warning("[combined] Ignoring unexpected monitor m{} for {}.", monitor_index, window_key)
+            return
+
         to_build: list[tuple[list[Path], Path, str, datetime]] = []
         with self._lock:
             self._seen_windows.add(window_key)
-            self._window_clips[window_key].add(clip_path)
+            self._window_clips[window_key][monitor_index] = clip_path
             prev = self._window_real_start.get(window_key)
             if prev is None or real_start < prev:
                 self._window_real_start[window_key] = real_start
@@ -211,18 +241,26 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
                     continue            # in-progress window — wait for the next hour
                 if w in self._submitted:
                     continue
-                available = sorted(
-                    p for p in self._window_clips.get(w, ())
-                    if p.exists() and ".tmp." not in p.name
-                )
-                if not available:
+                clips_by_monitor = self._window_clips.get(w, {})
+                available_indices = {
+                    idx for idx, path in clips_by_monitor.items()
+                    if path.exists() and ".tmp." not in path.name
+                }
+                missing = self._expected_monitor_indices - available_indices
+                if missing:
+                    logger.info("[combined] Window {} waiting for monitor(s): {}.", w, sorted(missing))
                     continue
-                w_real_start = self._window_real_start[w]
-                output = self._local_output(w_real_start)
+                available = [clips_by_monitor[idx] for idx in sorted(self._expected_monitor_indices)]
+                window_start = datetime.strptime(w, "%Y-%m-%d_%H-%M-%S").replace(tzinfo=timezone.utc)
+                if not self._has_full_window_coverage(available, w):
+                    continue
+                output = self._local_output(window_start)
                 self._submitted.add(w)
                 if output.exists():
                     continue
-                to_build.append((list(available), output, w, w_real_start))
+                # The output name and burned timestamp are the same canonical
+                # wall-clock boundary, never a monitor's arbitrary first PTS.
+                to_build.append((list(available), output, w, window_start))
 
         for clips, output, w, w_real_start in to_build:
             logger.info(
@@ -258,11 +296,9 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         """
         from datetime import timedelta  # noqa: PLC0415
 
-        # Per-monitor filenames now embed each monitor's own real segment start
-        # (not a shared floor prefix), so the window bucket has to be
-        # RE-DERIVED by flooring each parsed real start — this reliably
-        # reconstructs the same bucket across monitors because every real
-        # start, by construction, floors into its own correctly-shared window.
+        # Raw files are named from their shared UTC window boundary. Parsing
+        # that boundary still makes recovery compatible with older raw files
+        # that used the first real segment timestamp.
         windows: dict[str, list[Path]] = defaultdict(list)
         window_real_start: dict[str, datetime] = {}
         for clip in self._raw_dir.glob("*_m*.mp4"):
@@ -295,7 +331,10 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         with self._lock:
             self._seen_windows.update(windows.keys())
             for window_key, clips in windows.items():
-                self._window_clips[window_key].update(clips)
+                for clip in clips:
+                    monitor_index = self._monitor_index_from_path(clip)
+                    if monitor_index in self._expected_monitor_indices:
+                        self._window_clips[window_key][monitor_index] = clip
             for window_key, real_start in window_real_start.items():
                 prev = self._window_real_start.get(window_key)
                 if prev is None or real_start < prev:
@@ -315,9 +354,19 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
             if cutoff_key is not None and window_key < cutoff_key:
                 skipped_old += 1
                 continue   # older than the backfill horizon — leave as-is
-            clips = sorted(windows[window_key])
-            w_real_start = self._window_real_start[window_key]
-            output = self._local_output(w_real_start)
+            by_monitor = self._window_clips[window_key]
+            missing = self._expected_monitor_indices - set(by_monitor)
+            if missing:
+                logger.warning(
+                    "[combined] Recovery: {} incomplete; missing monitor(s): {}.",
+                    window_key, sorted(missing),
+                )
+                continue
+            clips = [by_monitor[idx] for idx in sorted(self._expected_monitor_indices)]
+            if not self._has_full_window_coverage(clips, window_key):
+                continue
+            window_start = datetime.strptime(window_key, "%Y-%m-%d_%H-%M-%S").replace(tzinfo=timezone.utc)
+            output = self._local_output(window_start)
             if output.exists():
                 continue
             with self._lock:
@@ -328,7 +377,7 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
                 "[combined] Recovery: queuing {} ({} clip(s) available).",
                 output.name, len(clips),
             )
-            self._submit(clips, output, window_key, w_real_start)
+            self._submit(clips, output, window_key, window_start)
             queued += 1
 
         if skipped_old:
@@ -349,6 +398,52 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
                 logger.info("[combined] Removed stale temp: {}", stale.name)
             except OSError:
                 logger.warning("[combined] Could not remove stale temp: {}", stale.name)
+
+    @staticmethod
+    def _monitor_index_from_path(path: Path) -> "int | None":
+        match = re.search(r"_m(\d+)\.mp4$", path.name)
+        return int(match.group(1)) if match else None
+
+    def _has_full_window_coverage(self, clips: list[Path], window_key: str) -> bool:
+        """Reject a partial hour instead of disguising it as a final grid.
+
+        ``ffprobe`` returns ``None`` for a file that is not probeable (which is
+        deliberately tolerated here so an operational FFprobe outage does not
+        stall recording).  A valid MP4 with a known duration shorter than the
+        small muxer/PTS allowance is, however, objectively incomplete and must
+        wait for a rebuilt raw clip.
+        """
+        minimum = self._window_seconds - self._duration_tolerance_seconds
+        short: list[str] = []
+        for clip in clips:
+            duration = self._clip_duration_seconds(clip)
+            if duration is not None and duration < minimum:
+                short.append(f"{clip.name}={duration:.2f}s")
+        if short:
+            logger.warning(
+                "[combined] Window {} incomplete; expected >= {}s per monitor, got {}. "
+                "It will not be published.",
+                window_key, minimum, ", ".join(short),
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _clip_duration_seconds(path: Path) -> float | None:
+        try:
+            result = subprocess.run(
+                [
+                    resolve_ffprobe(),
+                    "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+                ],
+                capture_output=True, text=True, timeout=20, check=False,
+            )
+            if result.returncode == 0:
+                return float(result.stdout.strip())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            logger.debug("[combined] Could not probe duration for {}.", path.name)
+        return None
 
     # ── Build ─────────────────────────────────────────────────────────
 
@@ -378,11 +473,9 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
                 [c.name for c in available],
             )
 
-            # Wall-clock overlay is folded into THIS encode (single pass) rather
-            # than burned by a second full transcode afterwards. real_start is
-            # already UTC (segment timestamps are UTC) — using it directly here
-            # (instead of the floor-based window_key) fixes a prior bug where the
-            # burned-in timestamp could be off by up to the window length.
+            # The overlay starts at the canonical hour boundary.  Using a
+            # monitor's first segment/PTS here made an output named 23:00 show
+            # 23:27 in its burned timestamp.
             drawtext: Optional[str] = None
             if self._ts_adapter is not None:
                 try:
@@ -410,7 +503,12 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
                 else:
                     # 2-column grid: n=2 side-by-side, n=3 2×2 w/ black slot, n=4 2×2.
                     # Cells are downscaled (self._cell) — the main size lever.
-                    filter_complex, out_label = _grid2_filter(n, cell=self._cell)
+                    filter_complex, out_label = _grid2_filter(
+                        n,
+                        cell=self._cell,
+                        duration_seconds=self._window_seconds,
+                        tail_pad_seconds=self._duration_tolerance_seconds,
+                    )
                 if drawtext is not None:
                     filter_complex += f";[{out_label}]{drawtext}[vout]"
                     out_label = "vout"
