@@ -53,11 +53,11 @@ class Settings:
     Copy .env.example to .env and override values as needed.
     """
 
-    # Directories — defaults use a local (non-OneDrive) path so that Windows
-    # Defender / OneDrive sync never holds locks on segment files.
-    # Override via SEGMENT_DIR / CLIPS_DIR in .env (absolute or relative paths).
+    # Hot recording data stays local so Windows Defender / OneDrive never holds
+    # locks on active files. Only final, atomically-written combined MP4s go to
+    # the operator's storage share.
     segment_dir:    Path = _resolve_dir("SEGMENT_DIR",     r"C:\WatcherData\segments")
-    clips_dir:      Path = _resolve_dir("CLIPS_DIR",       r"C:\WatcherData\clips")
+    clips_dir:      Path = _resolve_dir("CLIPS_DIR",       r"\\SIG-SLC-Storage\Storage3\Operator 29")
     raw_clips_dir:  Path = _resolve_dir("RAW_CLIPS_DIR",   r"C:\WatcherData\clips_raw")
     # Event-triggered (auto/manual) clips — kept out of clips_dir so combined
     # recordings and event highlights don't mix in the same folder. Fixed on
