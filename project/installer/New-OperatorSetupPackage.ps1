@@ -16,6 +16,25 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Get-MkcertExecutable {
+    param([string]$Candidate)
+    $command = Get-Command $Candidate -ErrorAction SilentlyContinue
+    if ($command -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) {
+        return $command.Source
+    }
+    if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
+        return (Resolve-Path -LiteralPath $Candidate).Path
+    }
+    $packages = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    if (Test-Path -LiteralPath $packages -PathType Container) {
+        $wingetBinary = Get-ChildItem -LiteralPath $packages -Filter 'mkcert.exe' -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'FiloSottile\.mkcert' } |
+            Select-Object -First 1
+        if ($wingetBinary) { return $wingetBinary.FullName }
+    }
+    return $null
+}
+
 if (-not (Test-Path -LiteralPath $ProvisioningRequest -PathType Leaf)) {
     throw "Provisioning request not found: $ProvisioningRequest"
 }
@@ -23,12 +42,8 @@ $request = Get-Content -LiteralPath $ProvisioningRequest -Raw -Encoding utf8 | C
 if ($request.schema_version -ne 1 -or $request.request_type -ne 'operator_daemon_provisioning') {
     throw 'Unsupported provisioning request.'
 }
-$mkcertCommand = Get-Command $MkcertPath -ErrorAction SilentlyContinue
-if ($mkcertCommand) {
-    $mkcert = $mkcertCommand.Source
-} elseif (Test-Path -LiteralPath $MkcertPath -PathType Leaf) {
-    $mkcert = (Resolve-Path -LiteralPath $MkcertPath).Path
-} else {
+$mkcert = Get-MkcertExecutable $MkcertPath
+if (-not $mkcert) {
     throw 'mkcert is required to build a field setup. Install it on this IT PC with: winget install --id FiloSottile.mkcert -e'
 }
 

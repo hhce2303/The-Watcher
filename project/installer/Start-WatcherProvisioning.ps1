@@ -47,6 +47,23 @@ function Test-Endpoint {
     return $Value -match '^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$'
 }
 
+function Get-MkcertExecutable {
+    # Winget does not reliably refresh PATH in a PowerShell process that was
+    # already open when mkcert was installed. Check the package location too.
+    $command = Get-Command 'mkcert.exe' -ErrorAction SilentlyContinue
+    if ($command -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) {
+        return $command.Source
+    }
+    $packages = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages'
+    if (Test-Path -LiteralPath $packages -PathType Container) {
+        $wingetBinary = Get-ChildItem -LiteralPath $packages -Filter 'mkcert.exe' -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'FiloSottile\.mkcert' } |
+            Select-Object -First 1
+        if ($wingetBinary) { return $wingetBinary.FullName }
+    }
+    return $null
+}
+
 function New-ProvisioningRequest {
     param(
         [Parameter(Mandatory)][int]$StationId,
@@ -188,7 +205,7 @@ $create.Add_Click({
     try {
         $path = New-ProvisioningRequest -StationId ([int]$stationId) -StationNumber $stationNumber -Endpoint $endpoint -Directory $directory
         $builder = Join-Path $PSScriptRoot 'New-OperatorSetupPackage.ps1'
-        $mkcert = Get-Command 'mkcert.exe' -ErrorAction SilentlyContinue
+        $mkcert = Get-MkcertExecutable
         if (-not $mkcert) {
             $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 90, 0)
             $status.Text = "Solicitud creada: $path. Falta mkcert para generar el Setup."
@@ -205,7 +222,7 @@ $create.Add_Click({
         Start-Process -FilePath 'powershell.exe' -ArgumentList @(
             '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $builder,
             '-ProvisioningRequest', $path, '-OutDir', $packageDir,
-            '-MkcertPath', $mkcert.Source
+            '-MkcertPath', $mkcert
         ) -WorkingDirectory $PSScriptRoot
     } catch {
         $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
