@@ -253,7 +253,7 @@ EVENT_COOLDOWN_SECONDS=30
 
 # Storage
 SEGMENT_DIR=C:/WatcherData/segments
-CLIPS_DIR=C:/WatcherData/clips
+CLIPS_DIR=\\SIG-SLC-Storage\Storage3\Operator 29
 
 # IT / Supervisor
 IT_WS_PORT=9090
