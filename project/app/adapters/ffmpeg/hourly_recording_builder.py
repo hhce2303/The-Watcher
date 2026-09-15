@@ -150,7 +150,7 @@ class RecordingClipBuilder(FfmpegBuilderExecutorMixin):
             clip_start = real_start if real_start > segs_snap[0].started_at else None
 
         window_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
-        output = self._window_output(real_start)
+        output = self._window_output(ws)
         logger.debug(
             "[clip m{}] Window {} — {} seg(s), {:.1f} MB raw → queuing build for {}",
             self._monitor_idx,
@@ -178,7 +178,7 @@ class RecordingClipBuilder(FfmpegBuilderExecutorMixin):
         closing_real_start = self._win_real_start.get(ws, closing_segs[0].started_at)
         closing_size = self._win_sizes[ws]
         closing_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
-        closing_output = self._window_output(closing_real_start)
+        closing_output = self._window_output(ws)
 
         # This window is done for good — time only moves forward, so no future
         # segment can ever floor into it again (unlike an overflow re-open,
@@ -193,7 +193,7 @@ class RecordingClipBuilder(FfmpegBuilderExecutorMixin):
             self._windows[new_ws].append(segment)
             self._win_sizes[new_ws] += seg_size
         new_real_start = self._win_real_start[new_ws]
-        new_output = self._window_output(new_real_start)
+        new_output = self._window_output(new_ws)
 
         logger.info(
             "[clip m{}] Segment {} straddles {} — closing {} at cut, opening {} from cut.",
@@ -243,7 +243,7 @@ class RecordingClipBuilder(FfmpegBuilderExecutorMixin):
                 self._win_real_start.setdefault(ws, default_real_start)
                 real_start = self._win_real_start[ws]
             window_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
-            output = self._window_output(real_start)
+            output = self._window_output(ws)
             clip_start = real_start if real_start > segs[0].started_at else None
             clip_end = boundary if segs[-1].ended_at > boundary else None
 
@@ -289,8 +289,9 @@ class RecordingClipBuilder(FfmpegBuilderExecutorMixin):
 
     # ── Private helpers ───────────────────────────────────────────────
 
-    def _window_output(self, real_start: datetime) -> Path:
-        ts = real_start.strftime("%Y-%m-%d_%H-%M-%S")
+    def _window_output(self, window_start: datetime) -> Path:
+        """Return the stable raw name for one monitor/window pair."""
+        ts = window_start.strftime("%Y-%m-%d_%H-%M-%S")
         return self._output_dir / f"{ts}_m{self._monitor_idx}.mp4"
 
     def _flush_window_locked(self, ws: datetime) -> None:
@@ -300,7 +301,7 @@ class RecordingClipBuilder(FfmpegBuilderExecutorMixin):
         if segs:
             real_start = self._win_real_start.get(ws, segs[0].started_at)
             window_key = ws.strftime("%Y-%m-%d_%H-%M-%S")
-            output = self._window_output(real_start)
+            output = self._window_output(ws)
             self._submit_build(segs, output, size, window_key, real_start)
         self._windows.pop(ws, None)
         self._win_sizes.pop(ws, None)
