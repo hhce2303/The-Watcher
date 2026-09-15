@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from loguru import logger
 
 _CHALLENGE_CONTEXT = b"the-watcher-browser-local:v1:"
+_LIVE_HEARTBEAT_CONTEXT = b"the-watcher-live-heartbeat:v1:"
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,11 @@ class DeviceIdentity:
         if not nonce or len(nonce) > 512:
             raise ValueError("invalid browser-local challenge nonce")
         signature = self._private_key.sign(_CHALLENGE_CONTEXT + nonce.encode("utf-8"))
+        return base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+
+    def sign_live_heartbeat(self, canonical_payload: str) -> str:
+        """Sign the exact, server-validated Daily live-heartbeat payload."""
+        signature = self._private_key.sign(_LIVE_HEARTBEAT_CONTEXT + canonical_payload.encode("utf-8"))
         return base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
 
     def enrollment_payload(self) -> dict[str, str]:

@@ -14,7 +14,12 @@
 #define AppPublisher "SIG Systems"
 #define AppExeName   "The Watcher.exe"
 #define AppURL       "https://sigsystems.com"
-#define SourceDir    "..\dist\The Watcher"
+#ifndef SourceDir
+  #define SourceDir "..\dist\The Watcher"
+#endif
+#ifndef OutputDir
+  #define OutputDir "..\dist"
+#endif
 
 ; ---------------------------------------------------------------------------
 [Setup]
@@ -31,15 +36,17 @@ AppUpdatesURL={#AppURL}
 ; Install to current user's LOCALAPPDATA — no elevation required
 DefaultDirName={localappdata}\{#AppName}
 DisableDirPage=yes
+; Install the daemon and its per-user enrollment under the interactive Operator
+; account.  Do not elevate the whole installer: otherwise {localappdata} is
+; resolved as the administrator account supplied to UAC instead of csoperator.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 
 ; Start Menu group
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 
 ; Output
-OutputDir=..\dist
+OutputDir={#OutputDir}
 OutputBaseFilename=Setup-The Watcher
 SetupIconFile=
 
@@ -51,8 +58,6 @@ LZMAUseSeparateProcess=yes
 ; Wizard appearance
 WizardStyle=modern
 WizardSizePercent=120
-WizardImageFile=compiler:WizModernImage-IS.bmp
-WizardSmallImageFile=compiler:WizModernSmallImage-IS.bmp
 
 ; Windows 10 or later required (Desktop Duplication API)
 MinVersion=10.0
@@ -95,19 +100,19 @@ Name: "{autoprograms}\{#AppName}"; \
 
 ; ---------------------------------------------------------------------------
 [Registry]
-; Auto-start at Windows login (optional task)
+; Operator deployment: start the daemon at Windows login.
 Root: HKCU; \
     Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
     ValueType: string; \
     ValueName: "{#AppName}"; \
-    ValueData: """{app}\{#AppExeName}"""; \
-    Flags: uninsdeletevalue; \
-    Tasks: autostart
+    ValueData: """{app}\{#AppExeName}"" --daemon"; \
+    Flags: uninsdeletevalue
 
 ; ---------------------------------------------------------------------------
 [Run]
 ; Offer to launch after install
 Filename: "{app}\{#AppExeName}"; \
+    Parameters: "--daemon"; \
     Description: "Iniciar {#AppName} ahora"; \
     Flags: nowait postinstall skipifsilent; \
     WorkingDir: "{app}"
@@ -119,6 +124,15 @@ Filename: "taskkill.exe"; \
     Parameters: "/F /IM {#AppExeName}"; \
     Flags: runhidden waituntilterminated; \
     RunOnceId: "StopTheWatcher"
+Filename: "schtasks.exe"; \
+    Parameters: "/Delete /TN ""TheWatcher-OperatorWatchdog"" /F"; \
+    Flags: runhidden waituntilterminated; \
+    RunOnceId: "RemoveTheWatcherWatchdog"
+
+[InstallDelete]
+; Remove stale unpacked runtime files from a previous one-dir release. Clips
+; and the persisted Operator identity are outside this target and preserved.
+Type: filesandordirs; Name: "{app}\_internal"
 
 ; ---------------------------------------------------------------------------
 [UninstallDelete]
@@ -145,4 +159,73 @@ begin
     Result := False;
   end else
     Result := True;
+end;
+
+procedure StopLegacyOperatorRuntime();
+var
+  ResultCode: Integer;
+begin
+  // Cleanup is intentionally limited to our executable and watchdog. It does
+  // not delete recordings or enrolment data.
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM "{#AppExeName}"', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\schtasks.exe'),
+    '/Delete /TN "TheWatcher-OperatorWatchdog" /F', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#AppName}');
+end;
+
+procedure WriteOperatorProfile();
+var
+  ProfilePath: String;
+  ProfileJson: String;
+begin
+  ProfilePath := ExpandConstant('{localappdata}\{#AppName}\user_config.json');
+  ProfileJson :=
+    '{' + #13#10 +
+    '  "clips_dir": null,' + #13#10 +
+    '  "selected_monitor_fingerprints": [],' + #13#10 +
+    '  "driver": "auto",' + #13#10 +
+    '  "codec": null,' + #13#10 +
+    '  "autorecord": true,' + #13#10 +
+    '  "it_ws_hosts": [],' + #13#10 +
+    '  "role": "operator"' + #13#10 +
+    '}';
+  if not SaveStringToFile(ProfilePath, ProfileJson, False) then
+    RaiseException('Could not write the Operator profile.');
+end;
+
+procedure ConfigureLiveViewFirewall();
+var
+  ResultCode: Integer;
+begin
+  // This is the only privileged operation.  ShellExec('runas') may ask for an
+  // administrator credential, but the application itself has already been
+  // installed in the original interactive user's LocalAppData directory.
+  if not ShellExec('runas', ExpandConstant('{sys}\netsh.exe'),
+    'advfirewall firewall add rule name=""The Watcher Live View"" dir=in action=allow protocol=TCP localport=8767 profile=private',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    MsgBox('The Watcher was installed for this user, but the LAN firewall rule was not added. Ask IT to allow TCP 8767 on the Private profile before using live supervision.', mbInformation, MB_OK);
+end;
+
+procedure TrustOperatorPreviewCertificate();
+var
+  ResultCode: Integer;
+begin
+  // Public test root only; makes the loopback Daily preview valid for the
+  // interactive Operator account.  It never imports the CA private key.
+  Exec(ExpandConstant('{sys}\certutil.exe'), '-user -addstore Root "{app}\certs\watcher-test-rootCA.pem"', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    StopLegacyOperatorRuntime()
+  else if CurStep = ssPostInstall then
+  begin
+    WriteOperatorProfile();
+    TrustOperatorPreviewCertificate();
+    ConfigureLiveViewFirewall();
+  end;
 end;

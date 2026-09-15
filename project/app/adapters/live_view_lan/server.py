@@ -11,10 +11,11 @@ import json
 import ssl
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from aiohttp import WSMsgType, web
+from aiohttp import ClientSession, WSMsgType, web
 from loguru import logger
 
 from app.adapters.browser_local.auth import AuthenticationError, BrowserSessionManager
@@ -48,8 +49,11 @@ class LiveViewLanAdapter(LiveViewPort):
         self._ready = threading.Event()
         self._start_error: Exception | None = None
         self._running = False
-        self._viewers = 0
+        # A viewer is an authenticated supervisor session, not one monitor
+        # stream. One supervisor may legitimately open every monitor.
+        self._viewer_streams: dict[str, int] = {}
         self._viewer_lock = threading.Lock()
+        self._heartbeat_task: asyncio.Task[None] | None = None
 
     @property
     def enrollment_payload(self) -> dict[str, str]:
@@ -120,10 +124,49 @@ class LiveViewLanAdapter(LiveViewPort):
         await web.TCPSite(self._runner, self._settings.live_view_bind_host, self._settings.live_view_port, ssl_context=context).start()
         self._stop_event = asyncio.Event()
         self._running = True
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         self._ready.set()
         logger.info("[live-view] listening at {}", self._settings.live_view_origin)
         await self._stop_event.wait()
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._heartbeat_task
+            self._heartbeat_task = None
         await self._runner.cleanup()
+
+    async def _heartbeat_loop(self) -> None:
+        """Publish a signed, non-media status signal for Daily's roster."""
+        if not self._settings.live_view_heartbeat_url:
+            logger.warning("[live-view] heartbeat URL is not configured")
+            return
+        interval = max(10, self._settings.live_view_heartbeat_seconds)
+        async with ClientSession() as client:
+            while True:
+                try:
+                    state = self._api.recording.get_recording_state()
+                    monitors = [m.index for m in self._api.recording.get_monitors()]
+                    recording_state = "recording" if state.is_recording else "stopped"
+                    timestamp = int(time.time())
+                    canonical = ":".join((
+                        self._identity.device_id, str(timestamp), self._settings.live_view_origin,
+                        recording_state, "ok", ",".join(str(index) for index in monitors),
+                    ))
+                    payload = {
+                        "device_id": self._identity.device_id, "timestamp": timestamp,
+                        "live_origin": self._settings.live_view_origin, "recording_state": recording_state,
+                        "health": "ok", "monitor_indexes": monitors,
+                        "signature": self._identity.sign_live_heartbeat(canonical),
+                    }
+                    async with client.post(self._settings.live_view_heartbeat_url, json=payload, timeout=10) as response:
+                        if response.status != 200:
+                            detail = (await response.text())[:512]
+                            logger.warning("[live-view] heartbeat rejected status={} detail={}", response.status, detail)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # daemon recording must survive transient Daily/LAN failures
+                    logger.warning("[live-view] heartbeat failed: {}", exc)
+                await asyncio.sleep(interval)
 
     @web.middleware
     async def _headers(self, _request: web.Request, handler):
@@ -177,9 +220,10 @@ class LiveViewLanAdapter(LiveViewPort):
     async def _stream(self, request: web.Request) -> web.StreamResponse:
         capability = self._sessions.require_capability(request.match_info["capability"], "preview")
         with self._viewer_lock:
-            if self._viewers >= self._settings.live_view_max_viewers:
+            is_new_viewer = capability.session_token not in self._viewer_streams
+            if is_new_viewer and len(self._viewer_streams) >= self._settings.live_view_max_viewers:
                 raise web.HTTPTooManyRequests(text="viewer limit reached")
-            self._viewers += 1
+            self._viewer_streams[capability.session_token] = self._viewer_streams.get(capability.session_token, 0) + 1
         response = web.StreamResponse(headers={"Content-Type": "multipart/x-mixed-replace; boundary=watcher-live-frame", "Cache-Control": "no-store"})
         await response.prepare(request)
         try:
@@ -197,7 +241,11 @@ class LiveViewLanAdapter(LiveViewPort):
             pass
         finally:
             with self._viewer_lock:
-                self._viewers = max(0, self._viewers - 1)
+                remaining = self._viewer_streams.get(capability.session_token, 1) - 1
+                if remaining > 0:
+                    self._viewer_streams[capability.session_token] = remaining
+                else:
+                    self._viewer_streams.pop(capability.session_token, None)
         return response
 
     async def _events(self, request: web.Request) -> web.WebSocketResponse:
