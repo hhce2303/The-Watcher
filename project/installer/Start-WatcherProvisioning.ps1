@@ -92,7 +92,7 @@ function New-ProvisioningRequest {
 }
 
 $form = [System.Windows.Forms.Form]::new()
-$form.Text = 'The Watcher — Provisión de estación'
+$form.Text = 'The Watcher - Provision de estacion'
 $form.StartPosition = 'CenterScreen'
 $form.ClientSize = [System.Drawing.Size]::new(650, 430)
 $form.FormBorderStyle = 'FixedDialog'
@@ -101,7 +101,7 @@ $form.MinimizeBox = $false
 $form.Font = [System.Drawing.Font]::new('Segoe UI', 10)
 
 $title = [System.Windows.Forms.Label]::new()
-$title.Text = 'Preparar instalación de The Watcher'
+$title.Text = 'Preparar instalacion de The Watcher'
 $title.Font = [System.Drawing.Font]::new('Segoe UI Semibold', 16)
 $title.Location = [System.Drawing.Point]::new(24, 22)
 $title.AutoSize = $true
@@ -139,8 +139,8 @@ function Add-Field {
     return $box
 }
 
-$stationIdBox = Add-Field 'ID de estación *' 120 'Identificador numérico existente en Daily.'
-$stationNumberBox = Add-Field 'Número de estación *' 180 'Ejemplo: 30. Este valor se muestra a supervisores y operadores.'
+$stationIdBox = Add-Field 'ID de estacion *' 120 'Identificador numerico existente en Daily.'
+$stationNumberBox = Add-Field 'Numero de estacion *' 180 'Ejemplo: 30. Este valor se muestra a supervisores y operadores.'
 $endpointBox = Add-Field 'Host o IP LAN (opcional)' 240 'Se conserva como pista para el setup; no se usa para generar llaves en este PC.'
 $outputBox = Add-Field 'Carpeta de solicitudes' 300 ''
 $outputBox.Text = $OutputDirectory
@@ -149,11 +149,11 @@ $status = [System.Windows.Forms.Label]::new()
 $status.Location = [System.Drawing.Point]::new(28, 347)
 $status.Size = [System.Drawing.Size]::new(585, 39)
 $status.ForeColor = [System.Drawing.Color]::FromArgb(95, 95, 95)
-$status.Text = 'La clave Ed25519 y el certificado TLS se crearán localmente al ejecutar Setup en el PC Operador.'
+$status.Text = 'La clave Ed25519 y el certificado TLS se crearan localmente al ejecutar Setup en el PC Operador.'
 $form.Controls.Add($status)
 
 $create = [System.Windows.Forms.Button]::new()
-$create.Text = 'Crear solicitud de instalación'
+$create.Text = 'Crear solicitud de instalacion'
 $create.Location = [System.Drawing.Point]::new(395, 387)
 $create.Size = [System.Drawing.Size]::new(220, 34)
 $create.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 212)
@@ -168,15 +168,15 @@ $create.Add_Click({
     $directory = $outputBox.Text.Trim()
 
     if (-not (Test-StationId $stationId)) {
-        [System.Windows.Forms.MessageBox]::Show('Ingresa un ID de estación numérico válido.', 'Dato requerido', 'OK', 'Warning') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show('Ingresa un ID de estacion numerico valido.', 'Dato requerido', 'OK', 'Warning') | Out-Null
         $stationIdBox.Focus(); return
     }
     if (-not (Test-StationNumber $stationNumber)) {
-        [System.Windows.Forms.MessageBox]::Show('Ingresa un número de estación positivo, por ejemplo 30.', 'Dato requerido', 'OK', 'Warning') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show('Ingresa un numero de estacion positivo, por ejemplo 30.', 'Dato requerido', 'OK', 'Warning') | Out-Null
         $stationNumberBox.Focus(); return
     }
     if (-not (Test-Endpoint $endpoint)) {
-        [System.Windows.Forms.MessageBox]::Show('El host o IP LAN no tiene un formato válido.', 'Revisa el host', 'OK', 'Warning') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show('El host o IP LAN no tiene un formato valido.', 'Revisa el host', 'OK', 'Warning') | Out-Null
         $endpointBox.Focus(); return
     }
     if ([string]::IsNullOrWhiteSpace($directory)) {
@@ -189,13 +189,13 @@ $create.Add_Click({
         $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 112, 60)
         $status.Text = "Solicitud creada: $path"
         [System.Windows.Forms.MessageBox]::Show(
-            "Solicitud creada correctamente.`n`n$path`n`nEl siguiente paso será incluirla en el Setup destinado a esta estación.",
+            "Solicitud creada correctamente.`n`n$path`n`nEl siguiente paso sera incluirla en el Setup destinado a esta estacion.",
             'The Watcher', 'OK', 'Information'
         ) | Out-Null
     } catch {
         $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
         $status.Text = "No se pudo crear la solicitud: $($_.Exception.Message)"
-        [System.Windows.Forms.MessageBox]::Show($status.Text, 'Error de provisión', 'OK', 'Error') | Out-Null
+        [System.Windows.Forms.MessageBox]::Show($status.Text, 'Error de provision', 'OK', 'Error') | Out-Null
     }
 })
 
