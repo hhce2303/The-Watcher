@@ -9,14 +9,24 @@ only, so this does not change machine-wide trust.
 #>
 [CmdletBinding()]
 param(
-    [string]$CertificatePath = (Join-Path $PSScriptRoot 'watcher-test-rootCA.pem')
+    [string]$CertificatePath = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if (-not $CertificatePath) {
+    $operatorRoot = Join-Path $PSScriptRoot 'watcher-operator-rootCA.pem'
+    $legacyTestRoot = Join-Path $PSScriptRoot 'watcher-test-rootCA.pem'
+    $CertificatePath = if (Test-Path -LiteralPath $operatorRoot -PathType Leaf) {
+        $operatorRoot
+    } else {
+        $legacyTestRoot
+    }
+}
+
 if (-not (Test-Path -LiteralPath $CertificatePath -PathType Leaf)) {
-    throw "Test CA certificate not found: $CertificatePath"
+    throw "Operator public CA certificate not found: $CertificatePath"
 }
 
 $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $CertificatePath
@@ -26,9 +36,9 @@ try {
     $existing = $store.Certificates | Where-Object Thumbprint -eq $certificate.Thumbprint
     if (-not $existing) {
         $store.Add($certificate)
-        Write-Host "Installed The Watcher test CA for the current Windows user." -ForegroundColor Green
+        Write-Host "Installed The Watcher Operator CA for the current Windows user." -ForegroundColor Green
     } else {
-        Write-Host "The Watcher test CA is already trusted by the current Windows user." -ForegroundColor Green
+        Write-Host "The Watcher Operator CA is already trusted by the current Windows user." -ForegroundColor Green
     }
 } finally {
     $store.Close()

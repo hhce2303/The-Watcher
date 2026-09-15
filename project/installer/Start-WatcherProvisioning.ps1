@@ -94,7 +94,7 @@ function New-ProvisioningRequest {
 $form = [System.Windows.Forms.Form]::new()
 $form.Text = 'The Watcher - Provision de estacion'
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize = [System.Drawing.Size]::new(650, 430)
+$form.ClientSize = [System.Drawing.Size]::new(650, 470)
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
@@ -153,8 +153,9 @@ $status.Text = 'La clave Ed25519 y el certificado TLS se crearan localmente al e
 $form.Controls.Add($status)
 
 $create = [System.Windows.Forms.Button]::new()
-$create.Text = 'Crear solicitud de instalacion'
-$create.Location = [System.Drawing.Point]::new(395, 387)
+$create.Text = 'Crear Setup de esta estacion'
+$create.Location = [System.Drawing.Point]::new(365, 425)
+$create.Size = [System.Drawing.Size]::new(250, 34)
 $create.Size = [System.Drawing.Size]::new(220, 34)
 $create.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 212)
 $create.ForeColor = [System.Drawing.Color]::White
@@ -186,12 +187,26 @@ $create.Add_Click({
 
     try {
         $path = New-ProvisioningRequest -StationId ([int]$stationId) -StationNumber $stationNumber -Endpoint $endpoint -Directory $directory
+        $builder = Join-Path $PSScriptRoot 'New-OperatorSetupPackage.ps1'
+        $mkcert = Get-Command 'mkcert.exe' -ErrorAction SilentlyContinue
+        if (-not $mkcert) {
+            $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 90, 0)
+            $status.Text = "Solicitud creada: $path. Falta mkcert para generar el Setup."
+            [System.Windows.Forms.MessageBox]::Show(
+                "La solicitud fue creada, pero este PC de IT necesita mkcert para incluirlo en el Setup.`n`nInstalalo una sola vez con:`nwinget install --id FiloSottile.mkcert -e",
+                'mkcert requerido', 'OK', 'Warning'
+            ) | Out-Null
+            return
+        }
+        $provisioningRoot = Split-Path -Parent $directory
+        $packageDir = Join-Path $provisioningRoot (Join-Path 'packages' ("station-{0}-id-{1}" -f $stationNumber, $stationId))
         $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 112, 60)
-        $status.Text = "Solicitud creada: $path"
-        [System.Windows.Forms.MessageBox]::Show(
-            "Solicitud creada correctamente.`n`n$path`n`nEl siguiente paso sera incluirla en el Setup destinado a esta estacion.",
-            'The Watcher', 'OK', 'Information'
-        ) | Out-Null
+        $status.Text = "Solicitud creada. Se abrio la consola de build para generar el Setup en: $packageDir"
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $builder,
+            '-ProvisioningRequest', $path, '-OutDir', $packageDir,
+            '-MkcertPath', $mkcert.Source
+        ) -WorkingDirectory $PSScriptRoot
     } catch {
         $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
         $status.Text = "No se pudo crear la solicitud: $($_.Exception.Message)"

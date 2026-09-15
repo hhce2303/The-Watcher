@@ -208,14 +208,19 @@ begin
     MsgBox('The Watcher was installed for this user, but the LAN firewall rule was not added. Ask IT to allow TCP 8767 on the Private profile before using live supervision.', mbInformation, MB_OK);
 end;
 
-procedure TrustOperatorPreviewCertificate();
+procedure InitializeOperatorProvisioning();
 var
   ResultCode: Integer;
 begin
-  // Public test root only; makes the loopback Daily preview valid for the
-  // interactive Operator account.  It never imports the CA private key.
-  Exec(ExpandConstant('{sys}\certutil.exe'), '-user -addstore Root "{app}\certs\watcher-test-rootCA.pem"', '', SW_HIDE,
-    ewWaitUntilTerminated, ResultCode);
+  // The helper executes as the interactive Operator (this installer is
+  // PrivilegesRequired=lowest).  It generates the device-local mkcert CA,
+  // leaf TLS certificate, and runtime profile. No private material comes from
+  // the IT workstation.
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Initialize-WatcherOperator.ps1') +
+    '" -InstallDir "' + ExpandConstant('{app}') + '"', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    RaiseException('The Watcher could not complete local certificate provisioning. The installation was not started.');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -225,7 +230,8 @@ begin
   else if CurStep = ssPostInstall then
   begin
     WriteOperatorProfile();
-    TrustOperatorPreviewCertificate();
-    ConfigureLiveViewFirewall();
+    InitializeOperatorProvisioning();
+    if FileExists(ExpandConstant('{app}\live-view-enabled.flag')) then
+      ConfigureLiveViewFirewall();
   end;
 end;

@@ -29,11 +29,20 @@
 param(
     [string]$OutDir = "",
     [string]$OperatorDeploymentConfig = "",
+    [string]$OperatorProvisioningRequest = "",
+    [string]$MkcertPath = "",
     [switch]$RequireInstaller
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($OperatorDeploymentConfig -and $OperatorProvisioningRequest) {
+    throw 'Specify either OperatorDeploymentConfig or OperatorProvisioningRequest, not both.'
+}
+if ($OperatorProvisioningRequest -and -not $MkcertPath) {
+    throw 'MkcertPath is required when building from an OperatorProvisioningRequest.'
+}
 
 $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
@@ -245,6 +254,31 @@ if ($OperatorDeploymentConfig -ne "") {
     }
     Copy-Item -LiteralPath $ProfilePath -Destination $EnvDest -Force
     Write-Host "Staged reviewed Operator deployment profile and TLS material." -ForegroundColor Green
+} elseif ($OperatorProvisioningRequest -ne "") {
+    # The request contains station metadata only.  Its certs and device key
+    # are intentionally NOT generated on this IT workstation: the bundled
+    # initializer runs mkcert on the destination Operator PC after install.
+    $RequestPath = (Resolve-Path -LiteralPath $OperatorProvisioningRequest).Path
+    $Request = Get-Content -LiteralPath $RequestPath -Raw -Encoding utf8 | ConvertFrom-Json
+    if ($Request.schema_version -ne 1 -or $Request.request_type -ne 'operator_daemon_provisioning' -or
+        -not $Request.station.id_station -or -not $Request.station.station_number) {
+        throw 'Operator provisioning request is invalid or missing station identity.'
+    }
+    if (-not (Test-Path -LiteralPath $MkcertPath -PathType Leaf)) {
+        throw "Bundled mkcert source was not found: $MkcertPath"
+    }
+    Copy-Item -LiteralPath $RequestPath -Destination (Join-Path $DistDir 'operator-provisioning.json') -Force
+    $ToolsDir = Join-Path $DistDir 'tools'
+    New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
+    Copy-Item -LiteralPath $MkcertPath -Destination (Join-Path $ToolsDir 'mkcert.exe') -Force
+    foreach ($InstallerHelper in @('Initialize-WatcherOperator.ps1', 'Install-WatcherSupervisorTrust.ps1')) {
+        $HelperPath = Join-Path $ScriptDir $InstallerHelper
+        if (-not (Test-Path -LiteralPath $HelperPath -PathType Leaf)) {
+            throw "Required installer helper is missing: $HelperPath"
+        }
+        Copy-Item -LiteralPath $HelperPath -Destination (Join-Path $DistDir $InstallerHelper) -Force
+    }
+    Write-Host 'Staged station request and destination-local certificate bootstrap.' -ForegroundColor Green
 } elseif ((Test-Path $EnvExample) -and -not (Test-Path $EnvDest)) {
     Copy-Item $EnvExample $EnvDest
     Write-Host "Copied .env.example to dist\The Watcher\.env"
