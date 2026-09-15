@@ -434,6 +434,71 @@ history; each item below carries file:line so it can be picked up standalone.
   retry/backoff philosophy elsewhere in the codebase.
 - **Depends on:** none.
 
+## Daemon installer and managed update channel — proposed work (2026-09-15)
+
+### 27. Guided Operator daemon installer with station identity and local TLS
+- **What:** Replace the current operator deployment's script-led handoff with a
+  signed setup flow that collects `id_station` and `station_number` in a small,
+  clear interface. The setup must validate both values before continuing,
+  provision the daemon under the intended Operator Windows account (never the
+  temporary administrator account used by UAC), generate the device Ed25519
+  keypair locally, and enrol the public key with the server.
+- **Why:** An external deployment should not require an operator to find source
+  scripts, copy a public key manually, edit `.env`, or understand certificates.
+  Those steps caused installation to land under the administrator profile and
+  made local preview/live-view failures difficult to diagnose.
+- **Acceptance direction:** one executable setup; progress and actionable error
+  screens; idempotent re-run/repair; detects and removes only this product's
+  stale service, certificates, firewall rule, and temporary files; preserves
+  recordings and the existing valid device identity unless the user explicitly
+  selects re-enrolment. It must create the local TLS certificate and trust it
+  on the destination PC during installation, bind the browser-local server only
+  to loopback, then install the narrowly-scoped LAN firewall rule required for
+  supervised viewing.
+- **Security constraints:** private keys never leave the target PC; station
+  identity and credentials must not appear in command lines, logs, URLs, or the
+  installer build; the installer must prove which Windows user will own the
+  daemon before writing user-scoped files. Certificate issuance/rotation must
+  be automated on the target, not copied from the developer PC.
+- **Architecture direction:** preserve the existing installer entry points as
+  implementation details, but add a dedicated provisioning contract/manifest
+  rather than silently overloading `.env`. Keep enrollment, certificate trust,
+  scheduled task/service setup, and firewall registration independently
+  retryable and auditable.
+- **Depends on:** an explicit backend enrolment API contract for the public key
+  and station metadata; final decision on the Windows elevation/user-context
+  handoff.
+
+### 28. Fleet update design: master-hosted, authenticated, atomic, differential
+- **What:** Design a managed update mechanism where a daemon contacts a configured
+  master endpoint to discover the newest compatible The Watcher release, then
+  downloads and applies only changed components. The master is initially the
+  designated management PC, but the product must model it as a configured,
+  replaceable endpoint—not a hard-coded personal computer or IP address.
+- **Why:** External operator PCs need reliable maintenance without repeating a
+  manual installer session, while recordings must continue and a failed update
+  must not strand a station without a daemon.
+- **Required properties:** versioned signed manifest; mutual/device
+  authentication; TLS; compatibility checks; resumable download with hashes;
+  delta/component packages where safe; staging outside the active install;
+  stop/swap/restart/health-check with automatic rollback; deferred update while
+  an hourly combine is active; audit trail and supervisor-visible status. The
+  updater must never accept an unsigned package merely because it originated on
+  the LAN.
+- **Transport decision still open:** evaluate **SSH/SFTP** versus **WebSocket
+  (or HTTPS) control plane plus HTTPS artifact download**. SSH is operationally
+  simple for an administered Windows master but adds account/key and firewall
+  management; WebSocket/HTTPS fits the existing browser/server patterns and
+  outbound-only agents but needs a durable update service, authorization model,
+  and artifact hosting. Select one through an ADR after a threat model and a
+  pilot with offline/restart/rollback cases; do not implement either as an
+  implicit fallback.
+- **Scope boundary:** this is a design and rollout item, not permission to make
+  the current development PC a production update server. First deliverable is
+  the installer UX and a signed update-manifest contract plus test harness.
+- **Depends on:** item 27; release artifact/versioning pipeline (item 4); a
+  key-rotation/revocation policy for enrolled devices.
+
 ## Completed
 
 ### Track R2 — recorder supervision: ctypes orphan-fix, M1 clip-engine quick win, M5 hardening
