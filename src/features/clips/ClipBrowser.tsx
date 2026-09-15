@@ -10,7 +10,6 @@ const LOCATIONS = (nasRoot: string) => [
   { icon: "◈", label: "SIG-SLC-Storage", path: nasRoot },
   { icon: "▤", label: "Clips combinados", path: "LOCAL_CLIPS" },
   { icon: "▦", label: "Clips por pantalla", path: "LOCAL_RAW" },
-  { icon: "⚡", label: "Clips de eventos", path: "LOCAL_EVENTS" },
 ];
 
 /** Folder navigation for the Clips tab — port of qml/ClipBrowser.qml. */

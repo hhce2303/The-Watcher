@@ -3,15 +3,10 @@ import { useRecording } from "../../hooks/useRecording";
 import { useAppStore } from "../../stores/appStore";
 import MonitorSelector from "./MonitorSelector";
 import DraggableWorkspace from "./DraggableWorkspace";
-import BufferTimeline, { type EventMarker } from "./BufferTimeline";
-import MarkEventButton from "./MarkEventButton";
-import PreRollOverlay from "./PreRollOverlay";
-import AnnotationModal from "./AnnotationModal";
+import BufferTimeline from "./BufferTimeline";
 import ITInboxPanel from "../it/ITInboxPanel";
 import { getPreviewServerInfo } from "../../lib/ipc";
 import type { PreviewServerInfo } from "../../types/dto";
-
-type Flow = "idle" | "preroll" | "annotate";
 
 function fmtTimecode(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -24,8 +19,6 @@ function fmtTimecode(totalSeconds: number): string {
 /** Grabación tab — port of qml/Main.qml's tab 0 (recording + preview + events). */
 export default function RecordingView() {
   const { state, monitors, busy, error, actions } = useRecording();
-  const [flow, setFlow] = useState<Flow>("idle");
-  const [markers, setMarkers] = useState<EventMarker[]>([]);
   const [inboxOpen, setInboxOpen] = useState(false);
   const isIt = useAppStore((s) => s.settings?.role) === "it";
   const isOperator = useAppStore((s) => s.settings?.role) === "operator";
@@ -55,16 +48,6 @@ export default function RecordingView() {
         <p>Connecting to backend…</p>
       </div>
     );
-  }
-
-  async function handleMarkEvent() {
-    const accepted = await actions.markEvent();
-    if (accepted) setFlow("preroll");
-  }
-
-  function handleAnnotationSaved(tag: string) {
-    setMarkers((prev) => [...prev, { sec: state!.record_seconds, tag }]);
-    setFlow("idle");
   }
 
   return (
@@ -109,7 +92,6 @@ export default function RecordingView() {
           >
             {state.is_recording ? "Detener" : "Iniciar"}
           </button>
-          <MarkEventButton onClick={handleMarkEvent} disabled={!state.is_recording} />
         </div>
 
         {error && <p style={{ color: "var(--accent-record)", fontSize: 12 }}>{error}</p>}
@@ -156,24 +138,13 @@ export default function RecordingView() {
 
         <DraggableWorkspace monitors={monitors} isRecording={state.is_recording} />
 
-        <BufferTimeline recordSec={state.record_seconds} eventMarkers={markers} />
+        <BufferTimeline recordSec={state.record_seconds} eventMarkers={[]} />
       </div>
 
       {isIt && inboxOpen && (
         <aside style={{ width: 320, flexShrink: 0, display: "flex", flexDirection: "column", height: "100%" }}>
           <ITInboxPanel />
         </aside>
-      )}
-
-      {flow === "preroll" && (
-        <PreRollOverlay onFinished={() => setFlow("annotate")} onCancelled={() => setFlow("idle")} />
-      )}
-      {flow === "annotate" && (
-        <AnnotationModal
-          eventTimecode={fmtTimecode(state.record_seconds)}
-          onSaved={handleAnnotationSaved}
-          onSkipped={() => setFlow("idle")}
-        />
       )}
     </div>
   );

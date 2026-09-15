@@ -74,6 +74,8 @@ def _recording_settings(tmp_path):
         batch_cpu_hard_cap_percent=0,
         max_batch_ffmpeg=1,
         proc_telemetry_interval_seconds=10.0,
+        events_enabled=True,
+        live_view_enabled=False,
     )
 
 
@@ -166,7 +168,7 @@ def test_operator_role_builds_full_recording_backend(tmp_path, _stop_telemetry_a
     assert 1 in backend.per_monitor_builders
 
 
-def test_operator_role_falls_back_to_primary_monitor_when_no_saved_selection(
+def test_operator_role_records_all_monitors_when_no_saved_selection(
     tmp_path, _stop_telemetry_after
 ):
     primary = _operator_monitor()
@@ -180,3 +182,47 @@ def test_operator_role_falls_back_to_primary_monitor_when_no_saved_selection(
         event_clips_dir=tmp_path / "clips_events",
     )
     assert backend.recording_service.selected_monitors == [primary]
+
+
+def test_operator_role_records_all_detected_monitors_for_combined_clip(
+    tmp_path, _stop_telemetry_after
+):
+    monitors = [
+        MonitorInfo(
+            name=f"\\\\.\\DISPLAY{i + 1}", width=1920, height=1080,
+            x=i * 1920, y=0, is_primary=i == 0, index=i,
+        )
+        for i in range(4)
+    ]
+    backend = build_recording_backend(
+        settings=_recording_settings(tmp_path),
+        user_config=SimpleNamespace(role="operator", selected_monitor_fingerprints=[]),
+        storage=FilesystemStorageAdapter(),
+        all_monitors=monitors,
+        clips_dir=tmp_path / "clips",
+        raw_clips_dir=tmp_path / "raw",
+        event_clips_dir=tmp_path / "clips_events",
+    )
+    assert backend.recording_service.selected_monitors == monitors
+    assert backend.combined_builder._expected_monitor_indices == frozenset({0, 1, 2, 3})
+
+
+def test_events_disabled_skips_inference_and_event_clip_pipeline(
+    tmp_path, _stop_telemetry_after
+):
+    settings = _recording_settings(tmp_path)
+    settings.events_enabled = False
+    backend = build_recording_backend(
+        settings=settings,
+        user_config=SimpleNamespace(role="operator", selected_monitor_fingerprints=[]),
+        storage=FilesystemStorageAdapter(),
+        all_monitors=[_operator_monitor()],
+        clips_dir=tmp_path / "clips",
+        raw_clips_dir=tmp_path / "raw",
+        event_clips_dir=tmp_path / "clips_events",
+    )
+    assert backend.event_store is not None  # audit persistence remains intact
+    assert backend.event_service is None
+    assert backend.auto_event_service is None
+    assert backend.batch_analyzer is None
+    assert backend.live_service is None

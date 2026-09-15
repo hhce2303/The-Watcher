@@ -163,6 +163,7 @@ def build_recording_backend(
         raw_dir=raw_clips_dir,
         output_dir=clips_dir,
         monitor_count=len(all_monitors),
+        monitor_indices=[m.index for m in all_monitors],
         timestamp_adapter=FFmpegTimestampAdapter(codec=settings.video_codec),
         codec=settings.video_codec,
         cell_width=settings.combined_cell_width,
@@ -203,11 +204,10 @@ def build_recording_backend(
 
     backend.recording_service = RecordingService(workers=backend.workers)
 
-    saved_fps = set(user_config.selected_monitor_fingerprints)
-    initial_selection = [m for m in all_monitors if m.fingerprint in saved_fps]
-    if not initial_selection:
-        initial_selection = [next((m for m in all_monitors if m.is_primary), all_monitors[0])]
-    backend.recording_service.change_monitors(initial_selection)
+    # Continuous recording must feed every monitor into the combined review
+    # clip. The legacy saved selection was event-specific and its empty state
+    # silently chose only the primary display.
+    backend.recording_service.change_monitors(all_monitors)
 
     clip_compiler = (
         make_clip_adapter(segment_compiler, settings.clip_engine)
@@ -225,6 +225,26 @@ def build_recording_backend(
 
     # Event persistence — manual events become queryable AnalyticEvents + sidecar.
     backend.event_store = SqliteEventStoreAdapter(settings.segment_dir.parent / "events.db")
+
+    # The event/ML pipeline is intentionally opt-in while continuous recording
+    # is stabilised. Keep the event store because it is also the audit store,
+    # but do not start inference, automatic events or event-clip FFmpeg jobs.
+    # getattr(..., True) preserves minimal legacy test/settings fixtures.
+    if not getattr(settings, "events_enabled", True):
+        logger.info("[backend] event pipeline disabled (EVENTS_ENABLED=false).")
+        backend.disk_monitor = DiskSpaceMonitor(
+            segment_dir=settings.segment_dir,
+            on_low_disk=backend.recording_service.stop,
+            warn_threshold_bytes=settings.disk_warn_bytes,
+            stop_threshold_bytes=settings.disk_stop_bytes,
+        )
+        backend.health_service = RecordingHealthService(
+            recording_service=backend.recording_service,
+            poll_interval_seconds=30.0,
+            background_services={},
+            hang_grace_seconds=settings.event_pipeline_hang_grace_seconds,
+        )
+        return backend
 
     def _persist_manual_event(ctx, output_path) -> None:
         ev = analytic_event_from_context(ctx, output_path)

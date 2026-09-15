@@ -62,11 +62,11 @@ class Settings:
     Copy .env.example to .env and override values as needed.
     """
 
-    # Directories — defaults use a local (non-OneDrive) path so that Windows
-    # Defender / OneDrive sync never holds locks on segment files.
-    # Override via SEGMENT_DIR / CLIPS_DIR in .env (absolute or relative paths).
+    # Hot recording data stays local so Windows Defender / OneDrive never holds
+    # locks on active files. Only final, atomically-written combined MP4s go to
+    # the operator's storage share.
     segment_dir:    Path = _resolve_dir("SEGMENT_DIR",     r"C:\WatcherData\segments")
-    clips_dir:      Path = _resolve_dir("CLIPS_DIR",       r"C:\WatcherData\clips")
+    clips_dir:      Path = _resolve_dir("CLIPS_DIR",       r"\\SIG-SLC-Storage\Storage3\Operator 29")
     raw_clips_dir:  Path = _resolve_dir("RAW_CLIPS_DIR",   r"C:\WatcherData\clips_raw")
     # Event-triggered (auto/manual) clips — kept out of clips_dir so combined
     # recordings and event highlights don't mix in the same folder. Fixed on
@@ -136,6 +136,11 @@ class Settings:
     # Disk free thresholds in bytes (default: warn=2GB, stop=512MB)
     disk_warn_bytes: int = int(os.getenv("DISK_WARN_BYTES", str(2 * 1024 ** 3)))
     disk_stop_bytes: int = int(os.getenv("DISK_STOP_BYTES", str(512 * 1024 ** 2)))
+
+    # Event detection and event-highlight clips are opt-in while continuous
+    # recording is stabilised. With this false, inference/event FFmpeg work
+    # cannot compete with the four-monitor recording pipeline.
+    events_enabled: bool = _env_flag("EVENTS_ENABLED", False)
 
     # Event / clip timing (all in seconds)
     # How long after pressing the button to wait before assembling the clip
