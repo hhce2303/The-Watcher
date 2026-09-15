@@ -128,6 +128,11 @@ class Settings:
     disk_warn_bytes: int = int(os.getenv("DISK_WARN_BYTES", str(2 * 1024 ** 3)))
     disk_stop_bytes: int = int(os.getenv("DISK_STOP_BYTES", str(512 * 1024 ** 2)))
 
+    # Event detection and event-highlight clips are opt-in while continuous
+    # recording is stabilised. With this false, inference/event FFmpeg work
+    # cannot compete with the four-monitor recording pipeline.
+    events_enabled: bool = _env_flag("EVENTS_ENABLED", False)
+
     # Event / clip timing (all in seconds)
     # How long after pressing the button to wait before assembling the clip
     # (captures post-event footage).  Override via EVENT_POST_SECONDS.

@@ -56,7 +56,7 @@ class TestStraddlingSegmentLive:
             builder.on_segment_finalized(seg, monitor_index=0)
             builder._executor.shutdown(wait=True)
 
-        closing_output = out_dir / "2026-07-12_16-59-33_m0.mp4"
+        closing_output = out_dir / "2026-07-12_16-00-00_m0.mp4"
         new_output = out_dir / "2026-07-12_17-00-00_m0.mp4"
         assert closing_output.exists(), "closing window's clip must exist"
         assert new_output.exists(), "new window's clip must start exactly at the boundary"
@@ -140,7 +140,7 @@ class TestStraddlingSegmentRecovery:
             builder.recover_from_segments([seg])
             builder._executor.shutdown(wait=True)
 
-        closing_output = out_dir / "2026-07-12_16-59-33_m0.mp4"
+        closing_output = out_dir / "2026-07-12_16-00-00_m0.mp4"
         new_output = out_dir / "2026-07-12_17-00-00_m0.mp4"
         assert closing_output.exists()
         assert new_output.exists()
@@ -174,7 +174,7 @@ class TestNonStraddlingSegmentUnchanged:
             builder.on_segment_finalized(seg, monitor_index=0)
             builder._executor.shutdown(wait=True)
 
-        output = out_dir / "2026-07-12_16-10-00_m0.mp4"
+        output = out_dir / "2026-07-12_16-00-00_m0.mp4"
         assert output.exists()
         assert len(calls) == 1
         assert "inpoint" not in calls[0] and "outpoint" not in calls[0]

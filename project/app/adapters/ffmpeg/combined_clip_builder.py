@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import re
 import subprocess
 import threading
 from collections import defaultdict
@@ -101,6 +102,7 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         raw_dir: Path,
         output_dir: Path,
         monitor_count: int,
+        monitor_indices: "list[int] | None" = None,
         timestamp_adapter=None,
         codec: str = "h264",
         cell_width: int = 1280,
@@ -130,6 +132,9 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         self._raw_dir    = raw_dir
         self._output_dir = output_dir
         self._n          = monitor_count
+        self._expected_monitor_indices = frozenset(
+            monitor_indices if monitor_indices is not None else range(monitor_count)
+        )
         self._ts_adapter = timestamp_adapter
         self._codec      = codec
         self._cell       = f"{cell_width}x{cell_height}"
@@ -140,10 +145,10 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         self._submitted: set[str] = set()       # window keys already queued/built
         self._seen_windows: set[str] = set()    # every window key a clip has arrived for
         # window_key -> per-monitor raw clip paths reporting into that window.
-        # Populated directly from on_clip_ready/recover() callback data — NOT by
-        # globbing/re-parsing filenames, since per-monitor filenames now embed
-        # each monitor's own real start time and no longer share a common prefix.
-        self._window_clips: dict[str, set[Path]] = defaultdict(set)
+        # Populated directly from on_clip_ready/recover() callback data. Paths
+        # are keyed by monitor index, so a duplicate callback replaces only its
+        # own current raw output and cannot masquerade as another screen.
+        self._window_clips: dict[str, dict[int, Path]] = defaultdict(dict)
         # window_key -> earliest real start among monitors reporting into it —
         # used as the combined clip's own filename/overlay timestamp.
         self._window_real_start: dict[str, datetime] = {}
@@ -160,18 +165,17 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def _local_output(self, real_start: datetime) -> Path:
+    def _local_output(self, window_start: datetime) -> Path:
         """Combined clip path with LOCAL time in the filename.
 
-        ``real_start`` is the earliest real per-monitor segment start time for
-        this window (UTC) — the combined clip shown to users should use local
-        time so the filename matches what they see on the system clock.
+        ``window_start`` is the canonical UTC boundary shared by every monitor.
+        The combined clip shown to users uses that boundary in local time.
 
         Example (UTC-5 machine):
-            real_start  2026-05-30 05:00:03 UTC
-            output      clips/2026-05-30_00-00-03.mp4
+            window_start  2026-05-30 05:00:00 UTC
+            output        clips/2026-05-30_00-00-00.mp4
         """
-        local_dt = real_start.astimezone()       # system local timezone
+        local_dt = window_start.astimezone()     # system local timezone
         local_key = local_dt.strftime("%Y-%m-%d_%H-%M-%S")
         return self._output_dir / f"{local_key}.mp4"
 
@@ -181,10 +185,9 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         Runs in the individual builder's executor thread — must be thread-safe.
         ``window_key`` is the shared floor-based bucket string (identical across
         every monitor reporting into the same hour, e.g. "2026-05-31_10-00-00");
-        ``real_start`` is THIS monitor's own real segment start time (per-monitor
-        filenames now embed real start, not the floor, so they no longer share a
-        common string prefix — the combining logic below never re-derives
-        ``window_key``/paths from filenames, only from these callback args).
+        ``real_start`` is THIS monitor's own real segment start time; it is used
+        for the timestamp overlay. Raw names use the shared ``window_key`` and
+        the monitor suffix, which the completeness guard verifies below.
 
         A window is combined EXACTLY ONCE, and only after it is COMPLETE. The
         per-monitor builder rebuilds its clip on every new segment, so this
@@ -197,10 +200,18 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         Re-encoding the 4K grid once per completed window (instead of on every
         segment) also keeps CPU impact low.
         """
+        monitor_index = self._monitor_index_from_path(clip_path)
+        if monitor_index is None:
+            logger.warning("[combined] Ignoring raw clip with invalid monitor suffix: {}", clip_path.name)
+            return
+        if monitor_index not in self._expected_monitor_indices:
+            logger.warning("[combined] Ignoring unexpected monitor m{} for {}.", monitor_index, window_key)
+            return
+
         to_build: list[tuple[list[Path], Path, str, datetime]] = []
         with self._lock:
             self._seen_windows.add(window_key)
-            self._window_clips[window_key].add(clip_path)
+            self._window_clips[window_key][monitor_index] = clip_path
             prev = self._window_real_start.get(window_key)
             if prev is None or real_start < prev:
                 self._window_real_start[window_key] = real_start
@@ -211,14 +222,19 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
                     continue            # in-progress window — wait for the next hour
                 if w in self._submitted:
                     continue
-                available = sorted(
-                    p for p in self._window_clips.get(w, ())
-                    if p.exists() and ".tmp." not in p.name
-                )
-                if not available:
+                clips_by_monitor = self._window_clips.get(w, {})
+                available_indices = {
+                    idx for idx, path in clips_by_monitor.items()
+                    if path.exists() and ".tmp." not in path.name
+                }
+                missing = self._expected_monitor_indices - available_indices
+                if missing:
+                    logger.info("[combined] Window {} waiting for monitor(s): {}.", w, sorted(missing))
                     continue
+                available = [clips_by_monitor[idx] for idx in sorted(self._expected_monitor_indices)]
                 w_real_start = self._window_real_start[w]
-                output = self._local_output(w_real_start)
+                window_start = datetime.strptime(w, "%Y-%m-%d_%H-%M-%S").replace(tzinfo=timezone.utc)
+                output = self._local_output(window_start)
                 self._submitted.add(w)
                 if output.exists():
                     continue
@@ -258,11 +274,9 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         """
         from datetime import timedelta  # noqa: PLC0415
 
-        # Per-monitor filenames now embed each monitor's own real segment start
-        # (not a shared floor prefix), so the window bucket has to be
-        # RE-DERIVED by flooring each parsed real start — this reliably
-        # reconstructs the same bucket across monitors because every real
-        # start, by construction, floors into its own correctly-shared window.
+        # Raw files are named from their shared UTC window boundary. Parsing
+        # that boundary still makes recovery compatible with older raw files
+        # that used the first real segment timestamp.
         windows: dict[str, list[Path]] = defaultdict(list)
         window_real_start: dict[str, datetime] = {}
         for clip in self._raw_dir.glob("*_m*.mp4"):
@@ -295,7 +309,10 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
         with self._lock:
             self._seen_windows.update(windows.keys())
             for window_key, clips in windows.items():
-                self._window_clips[window_key].update(clips)
+                for clip in clips:
+                    monitor_index = self._monitor_index_from_path(clip)
+                    if monitor_index in self._expected_monitor_indices:
+                        self._window_clips[window_key][monitor_index] = clip
             for window_key, real_start in window_real_start.items():
                 prev = self._window_real_start.get(window_key)
                 if prev is None or real_start < prev:
@@ -315,9 +332,18 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
             if cutoff_key is not None and window_key < cutoff_key:
                 skipped_old += 1
                 continue   # older than the backfill horizon — leave as-is
-            clips = sorted(windows[window_key])
+            by_monitor = self._window_clips[window_key]
+            missing = self._expected_monitor_indices - set(by_monitor)
+            if missing:
+                logger.warning(
+                    "[combined] Recovery: {} incomplete; missing monitor(s): {}.",
+                    window_key, sorted(missing),
+                )
+                continue
+            clips = [by_monitor[idx] for idx in sorted(self._expected_monitor_indices)]
             w_real_start = self._window_real_start[window_key]
-            output = self._local_output(w_real_start)
+            window_start = datetime.strptime(window_key, "%Y-%m-%d_%H-%M-%S").replace(tzinfo=timezone.utc)
+            output = self._local_output(window_start)
             if output.exists():
                 continue
             with self._lock:
@@ -349,6 +375,11 @@ class CombinedClipBuilder(FfmpegBuilderExecutorMixin):
                 logger.info("[combined] Removed stale temp: {}", stale.name)
             except OSError:
                 logger.warning("[combined] Could not remove stale temp: {}", stale.name)
+
+    @staticmethod
+    def _monitor_index_from_path(path: Path) -> "int | None":
+        match = re.search(r"_m(\d+)\.mp4$", path.name)
+        return int(match.group(1)) if match else None
 
     # ── Build ─────────────────────────────────────────────────────────
 
