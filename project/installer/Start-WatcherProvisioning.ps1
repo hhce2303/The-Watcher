@@ -19,7 +19,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = 'C:\Watcher-Provisioning\requests'
+    [string]$OutputDirectory = 'C:\Watcher-Provisioning'
 )
 
 Set-StrictMode -Version Latest
@@ -94,7 +94,9 @@ function New-ProvisioningRequest {
         }
     }
 
-    $fullDirectory = [IO.Path]::GetFullPath($Directory)
+    # Requests are implementation detail; the IT user chooses the provisioning
+    # root and receives the finished Setup in its packages/ subdirectory.
+    $fullDirectory = Join-Path ([IO.Path]::GetFullPath($Directory)) '.requests'
     [IO.Directory]::CreateDirectory($fullDirectory) | Out-Null
     $fileName = 'watcher-provisioning-station-{0}-id-{1}.json' -f $safeStationNumber, $StationId
     $path = Join-Path $fullDirectory $fileName
@@ -111,7 +113,7 @@ function New-ProvisioningRequest {
 $form = [System.Windows.Forms.Form]::new()
 $form.Text = 'The Watcher - Provision de estacion'
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize = [System.Drawing.Size]::new(650, 470)
+$form.ClientSize = [System.Drawing.Size]::new(650, 490)
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
@@ -159,11 +161,11 @@ function Add-Field {
 $stationIdBox = Add-Field 'ID de estacion *' 120 'Identificador numerico existente en Daily.'
 $stationNumberBox = Add-Field 'Numero de estacion *' 180 'Ejemplo: 30. Este valor se muestra a supervisores y operadores.'
 $endpointBox = Add-Field 'Host o IP LAN (opcional)' 240 'Se conserva como pista para el setup; no se usa para generar llaves en este PC.'
-$outputBox = Add-Field 'Carpeta de solicitudes' 300 ''
+$outputBox = Add-Field 'Carpeta de salida' 300 'El instalador final se guarda en packages. La solicitud se administra internamente.'
 $outputBox.Text = $OutputDirectory
 
 $status = [System.Windows.Forms.Label]::new()
-$status.Location = [System.Drawing.Point]::new(28, 347)
+$status.Location = [System.Drawing.Point]::new(28, 352)
 $status.Size = [System.Drawing.Size]::new(585, 39)
 $status.ForeColor = [System.Drawing.Color]::FromArgb(95, 95, 95)
 $status.Text = 'La clave Ed25519 y el certificado TLS se crearan localmente al ejecutar Setup en el PC Operador.'
@@ -171,13 +173,32 @@ $form.Controls.Add($status)
 
 $create = [System.Windows.Forms.Button]::new()
 $create.Text = 'Crear Setup de esta estacion'
-$create.Location = [System.Drawing.Point]::new(365, 425)
+$create.Location = [System.Drawing.Point]::new(365, 440)
 $create.Size = [System.Drawing.Size]::new(250, 34)
-$create.Size = [System.Drawing.Size]::new(220, 34)
 $create.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 212)
 $create.ForeColor = [System.Drawing.Color]::White
 $create.FlatStyle = 'Flat'
 $form.Controls.Add($create)
+
+$progress = [System.Windows.Forms.ProgressBar]::new()
+$progress.Location = [System.Drawing.Point]::new(28, 414)
+$progress.Size = [System.Drawing.Size]::new(320, 12)
+$progress.Visible = $false
+$form.Controls.Add($progress)
+
+$openFolder = [System.Windows.Forms.Button]::new()
+$openFolder.Text = 'Abrir carpeta'
+$openFolder.Location = [System.Drawing.Point]::new(28, 440)
+$openFolder.Size = [System.Drawing.Size]::new(150, 34)
+$openFolder.Visible = $false
+$form.Controls.Add($openFolder)
+
+$script:setupPackageDir = ''
+$openFolder.Add_Click({
+    if ($script:setupPackageDir -and (Test-Path -LiteralPath $script:setupPackageDir)) {
+        Start-Process -FilePath 'explorer.exe' -ArgumentList $script:setupPackageDir
+    }
+})
 
 $create.Add_Click({
     $stationId = $stationIdBox.Text.Trim()
@@ -208,22 +229,60 @@ $create.Add_Click({
         $mkcert = Get-MkcertExecutable
         if (-not $mkcert) {
             $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 90, 0)
-            $status.Text = "Solicitud creada: $path. Falta mkcert para generar el Setup."
+            $status.Text = 'No se puede generar el Setup porque mkcert no esta disponible en este PC de IT.'
             [System.Windows.Forms.MessageBox]::Show(
-                "La solicitud fue creada, pero este PC de IT necesita mkcert para incluirlo en el Setup.`n`nInstalalo una sola vez con:`nwinget install --id FiloSottile.mkcert -e",
+                "Este PC de IT necesita mkcert para incluirlo en el Setup.`n`nInstalalo una sola vez con:`nwinget install --id FiloSottile.mkcert -e",
                 'mkcert requerido', 'OK', 'Warning'
             ) | Out-Null
             return
         }
-        $provisioningRoot = Split-Path -Parent $directory
-        $packageDir = Join-Path $provisioningRoot (Join-Path 'packages' ("station-{0}-id-{1}" -f $stationNumber, $stationId))
-        $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 112, 60)
-        $status.Text = "Solicitud creada. Se abrio la consola de build para generar el Setup en: $packageDir"
-        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
-            '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $builder,
-            '-ProvisioningRequest', $path, '-OutDir', $packageDir,
-            '-MkcertPath', $mkcert
-        ) -WorkingDirectory $PSScriptRoot
+        $packageDir = Join-Path $directory (Join-Path 'packages' ("station-{0}-id-{1}" -f $stationNumber, $stationId))
+        $script:setupPackageDir = $packageDir
+        $openFolder.Visible = $false
+        $create.Enabled = $false
+        $stationIdBox.Enabled = $false
+        $stationNumberBox.Enabled = $false
+        $endpointBox.Enabled = $false
+        $outputBox.Enabled = $false
+        $progress.Style = [System.Windows.Forms.ProgressBarStyle]::Marquee
+        $progress.Visible = $true
+        $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 90, 160)
+        $status.Text = 'Generando el instalador. Esto puede tardar varios minutos...'
+
+        $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -ProvisioningRequest "{1}" -OutDir "{2}" -MkcertPath "{3}"' -f $builder, $path, $packageDir, $mkcert
+        $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $processInfo.FileName = 'powershell.exe'
+        $processInfo.Arguments = $arguments
+        $processInfo.WorkingDirectory = $PSScriptRoot
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+        $script:setupBuildProcess = [System.Diagnostics.Process]::Start($processInfo)
+
+        $poll = [System.Windows.Forms.Timer]::new()
+        $poll.Interval = 500
+        $poll.Add_Tick({
+            if (-not $script:setupBuildProcess.HasExited) { return }
+            $poll.Stop()
+            $progress.Visible = $false
+            $create.Enabled = $true
+            $stationIdBox.Enabled = $true
+            $stationNumberBox.Enabled = $true
+            $endpointBox.Enabled = $true
+            $outputBox.Enabled = $true
+            $setup = Join-Path $script:setupPackageDir 'Setup-The Watcher.exe'
+            if ($script:setupBuildProcess.ExitCode -eq 0 -and (Test-Path -LiteralPath $setup -PathType Leaf)) {
+                $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 112, 60)
+                $status.Text = "Instalador listo: $setup"
+                $openFolder.Visible = $true
+                [System.Windows.Forms.MessageBox]::Show("El Setup esta listo para compartir con el Operador.`n`n$setup", 'Setup listo', 'OK', 'Information') | Out-Null
+            } else {
+                $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
+                $status.Text = 'No se pudo generar el Setup. Revisa que Inno Setup este instalado y vuelve a intentarlo.'
+                [System.Windows.Forms.MessageBox]::Show($status.Text, 'Error de build', 'OK', 'Error') | Out-Null
+            }
+            $poll.Dispose()
+        })
+        $poll.Start()
     } catch {
         $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
         $status.Text = "No se pudo crear la solicitud: $($_.Exception.Message)"
