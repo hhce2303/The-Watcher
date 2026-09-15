@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import threading
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import jwt
+from jwt.algorithms import OKPAlgorithm
 from loguru import logger
 
 from app.adapters.browser_local.identity import DeviceIdentity
@@ -65,7 +67,15 @@ class BrowserSessionManager:
         self._audience = audience
         self._issuer_kid = issuer_kid
         self._station_id = station_id
-        self._public_key = key_path.read_text(encoding="utf-8")
+        raw_public_key = key_path.read_text(encoding="utf-8")
+        try:
+            public_jwk = json.loads(raw_public_key)
+        except json.JSONDecodeError:
+            self._public_key = raw_public_key
+        else:
+            if not isinstance(public_jwk, dict) or public_jwk.get("kty") != "OKP":
+                raise ValueError("issuer verification key must be PEM or an Ed25519 public JWK")
+            self._public_key = OKPAlgorithm.from_jwk(json.dumps(public_jwk))
         self._session_ttl = session_ttl_seconds
         self._capability_ttl = capability_ttl_seconds
         self._required_scope = required_scope

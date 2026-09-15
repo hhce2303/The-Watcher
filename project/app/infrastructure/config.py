@@ -37,6 +37,15 @@ def _resolve_dir(env_key: str, default: str) -> Path:
     return p if p.is_absolute() else _BASE / raw
 
 
+def _resolve_file(env_key: str, default: str = "") -> str:
+    """Resolve packaged trust material independently of the process CWD."""
+    raw = os.getenv(env_key, default).strip()
+    if not raw:
+        return ""
+    path = Path(raw)
+    return str(path if path.is_absolute() else _BASE / path)
+
+
 def _env_flag(key: str, default: bool = False) -> bool:
     """Parse an explicit boolean environment flag without truthy-string traps."""
     value = os.getenv(key)
@@ -220,11 +229,9 @@ class Settings:
     # A device is enrolled against exactly one Daily workstation. Zero means unconfigured
     # and fails closed when the browser adapter is enabled.
     browser_local_station_id: int = int(os.getenv("BROWSER_LOCAL_STATION_ID", "0"))
-    browser_local_cert_file: str = os.getenv("BROWSER_LOCAL_CERT_FILE", "")
-    browser_local_key_file: str = os.getenv("BROWSER_LOCAL_KEY_FILE", "")
-    browser_local_issuer_public_key_file: str = os.getenv(
-        "BROWSER_LOCAL_ISSUER_PUBLIC_KEY_FILE", ""
-    )
+    browser_local_cert_file: str = _resolve_file("BROWSER_LOCAL_CERT_FILE")
+    browser_local_key_file: str = _resolve_file("BROWSER_LOCAL_KEY_FILE")
+    browser_local_issuer_public_key_file: str = _resolve_file("BROWSER_LOCAL_ISSUER_PUBLIC_KEY_FILE")
     browser_local_data_dir: Path = _resolve_dir(
         "BROWSER_LOCAL_DATA_DIR",
         os.path.join(
@@ -245,13 +252,13 @@ class Settings:
     live_view_parent_origin: str = os.getenv(
         "LIVE_VIEW_PARENT_ORIGIN", "https://daily.sig.systems"
     ).rstrip("/")
-    live_view_cert_file: str = os.getenv("LIVE_VIEW_CERT_FILE", "")
-    live_view_key_file: str = os.getenv("LIVE_VIEW_KEY_FILE", "")
+    live_view_cert_file: str = _resolve_file("LIVE_VIEW_CERT_FILE")
+    live_view_key_file: str = _resolve_file("LIVE_VIEW_KEY_FILE")
     live_view_issuer: str = os.getenv("LIVE_VIEW_ISSUER", "daily.sig.systems")
     live_view_audience: str = os.getenv("LIVE_VIEW_AUDIENCE", "the-watcher-live")
     live_view_issuer_kid: str = os.getenv("LIVE_VIEW_ISSUER_KID", "")
-    live_view_issuer_public_key_file: str = os.getenv(
-        "LIVE_VIEW_ISSUER_PUBLIC_KEY_FILE", ""
+    live_view_issuer_public_key_file: str = _resolve_file(
+        "LIVE_VIEW_ISSUER_PUBLIC_KEY_FILE"
     )
     live_view_station_id: int = int(os.getenv("LIVE_VIEW_STATION_ID", "0"))
     live_view_heartbeat_url: str = os.getenv("LIVE_VIEW_HEARTBEAT_URL", "")
