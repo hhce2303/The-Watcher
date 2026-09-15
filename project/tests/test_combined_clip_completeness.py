@@ -44,3 +44,31 @@ def test_raw_clip_names_use_window_boundary_not_first_segment_second(tmp_path: P
     assert builder._window_output(datetime(2026, 9, 15, 2, 0, tzinfo=timezone.utc)).name == (
         "2026-09-15_02-00-00_m2.mp4"
     )
+
+
+def test_combined_builder_rejects_a_known_partial_hour(tmp_path, monkeypatch) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    builder = CombinedClipBuilder(
+        raw_dir=raw, output_dir=tmp_path / "combined", monitor_count=2,
+        monitor_indices=[0, 1],
+    )
+    # A real probe result under the 10-second transport allowance is an
+    # incomplete recording, not a candidate to be padded into a final grid.
+    monkeypatch.setattr(
+        builder, "_clip_duration_seconds",
+        lambda path: 1741.7 if path.name.endswith("_m0.mp4") else 3597.0,
+    )
+    assert not builder._has_full_window_coverage(
+        [_clip(raw, "2026-09-15_02-00-00", 0), _clip(raw, "2026-09-15_02-00-00", 1)],
+        "2026-09-15_02-00-00",
+    )
+
+
+def test_grid_filter_normalizes_a_complete_hour_to_exact_duration() -> None:
+    from app.adapters.ffmpeg.combined_clip_builder import _grid2_filter
+
+    filter_complex, output = _grid2_filter(2, duration_seconds=3600, tail_pad_seconds=10)
+    assert "tpad=stop_mode=clone:stop_duration=10" in filter_complex
+    assert "trim=duration=3600" in filter_complex
+    assert output == "row0"
