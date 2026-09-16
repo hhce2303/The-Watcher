@@ -258,11 +258,14 @@ $create.Add_Click({
         $processInfo.CreateNoWindow = $true
         $script:setupBuildProcess = [System.Diagnostics.Process]::Start($processInfo)
 
-        $poll = [System.Windows.Forms.Timer]::new()
-        $poll.Interval = 500
-        $poll.Add_Tick({
+        # Event handlers execute in their own scope. Keep the timer in script
+        # state instead of closing over a local variable (StrictMode otherwise
+        # raises "Variable '$poll' has not been set" on the first tick).
+        $script:setupBuildTimer = [System.Windows.Forms.Timer]::new()
+        $script:setupBuildTimer.Interval = 500
+        $script:setupBuildTimer.Add_Tick({
             if (-not $script:setupBuildProcess.HasExited) { return }
-            $poll.Stop()
+            $script:setupBuildTimer.Stop()
             $progress.Visible = $false
             $create.Enabled = $true
             $stationIdBox.Enabled = $true
@@ -280,9 +283,10 @@ $create.Add_Click({
                 $status.Text = 'No se pudo generar el Setup. Revisa que Inno Setup este instalado y vuelve a intentarlo.'
                 [System.Windows.Forms.MessageBox]::Show($status.Text, 'Error de build', 'OK', 'Error') | Out-Null
             }
-            $poll.Dispose()
+            $script:setupBuildTimer.Dispose()
+            $script:setupBuildTimer = $null
         })
-        $poll.Start()
+        $script:setupBuildTimer.Start()
     } catch {
         $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
         $status.Text = "No se pudo crear la solicitud: $($_.Exception.Message)"
