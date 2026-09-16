@@ -259,7 +259,6 @@ $create.Add_Click({
             '-ProvisioningRequest', $path, '-OutDir', $packageDir,
             '-MkcertPath', $mkcert
         ) -WorkingDirectory $PSScriptRoot
-        $form.Close()
     } catch {
         $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
         $status.Text = "No se pudo crear la solicitud: $($_.Exception.Message)"
