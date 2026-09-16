@@ -316,31 +316,33 @@ if ($OutDir -ne "") {
 }
 
 # ---------------------------------------------------------------------------
-# Create distributable ZIP (contains Setup.bat + install.ps1 + exe)
+# Create portable ZIP only for the portable distribution. A field installer
+# already produces Setup-The Watcher.exe, so ZIP compression is redundant and
+# can stall on Defender/OneDrive file handles before Inno Setup ever runs.
 # ---------------------------------------------------------------------------
-$ZipPath = Join-Path $StagingRoot "The Watcher-$Version.zip"
-if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+$ZipPath = $null
+if ($RequireInstaller) {
+    Write-Host 'Skipping portable ZIP for field installer build.' -ForegroundColor Gray
+} else {
+    $ZipPath = Join-Path $StagingRoot "The Watcher-$Version.zip"
+    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 
-# Retry the compression: the dist folder lives inside OneDrive, which (along
-# with Windows Defender) transiently locks just-written files such as
-# _internal\base_library.zip. Compress-Archive raises a non-terminating error
-# on the lock, so without a retry the build would falsely report success
-# without producing the ZIP.
-$ZipOk = $false
-for ($i = 1; $i -le 4 -and -not $ZipOk; $i++) {
-    try {
-        Compress-Archive -Path $DistDir -DestinationPath $ZipPath -Force -ErrorAction Stop
-        $ZipOk = $true
-    } catch {
-        Write-Warning "ZIP attempt $i failed (likely OneDrive/Defender lock): $($_.Exception.Message)"
-    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue }
-        Start-Sleep -Seconds 3
+    $ZipOk = $false
+    for ($i = 1; $i -le 4 -and -not $ZipOk; $i++) {
+        try {
+            Compress-Archive -Path $DistDir -DestinationPath $ZipPath -Force -ErrorAction Stop
+            $ZipOk = $true
+        } catch {
+            Write-Warning "ZIP attempt $i failed (likely OneDrive/Defender lock): $($_.Exception.Message)"
+            if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 3
+        }
     }
+    if (-not $ZipOk) {
+        Write-Error "Failed to create $ZipPath after 4 attempts (file lock). Pause OneDrive sync on dist\ and re-run."
+    }
+    Write-Host "Distribution package: $ZipPath" -ForegroundColor Green
 }
-if (-not $ZipOk) {
-    Write-Error "Failed to create $ZipPath after 4 attempts (file lock). Pause OneDrive sync on dist\ and re-run."
-}
-Write-Host "Distribution package: $ZipPath" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # Optional: build a proper Windows installer using Inno Setup 6
@@ -389,7 +391,7 @@ if ($IsccPath -and (Test-Path $IssScript)) {
 Write-Host ""
 Write-Host "=== Build finished (v$Version) ===" -ForegroundColor Cyan
 Write-Host "  Executable     : dist\The Watcher\The Watcher.exe"
-Write-Host "  ZIP (portable) : dist\The Watcher-$Version.zip"
+if ($ZipPath) { Write-Host "  ZIP (portable) : $ZipPath" }
 if ($OutDir -ne "" -and (Test-Path (Join-Path $OutDir "Setup-The Watcher.exe"))) {
     Write-Host "  Installer      : $(Join-Path $OutDir 'Setup-The Watcher.exe')" -ForegroundColor Green
 } elseif (Test-Path (Join-Path $ProjectRoot "dist\Setup-The Watcher.exe")) {
