@@ -35,6 +35,14 @@ $endpoint = ([string]$request.station.endpoint_hint).Trim()
 if ($stationId -lt 1 -or [string]::IsNullOrWhiteSpace($stationNumber)) {
     throw 'The provisioning request has an invalid station identity.'
 }
+$nasPathFile = Join-Path $install 'operator-nas-path.txt'
+if (-not (Test-Path -LiteralPath $nasPathFile -PathType Leaf)) {
+    throw 'The installer did not provide a NAS destination for final clips.'
+}
+$clipsDir = (Get-Content -LiteralPath $nasPathFile -Raw -Encoding utf8).Trim()
+if (-not $clipsDir.StartsWith('\\')) {
+    throw 'The final clips destination must be a UNC NAS path beginning with \\.'
+}
 
 $certDir = Join-Path $install 'certs'
 $caRoot = Join-Path $certDir 'mkcert'
@@ -103,6 +111,7 @@ $profile = @(
     "LIVE_VIEW_HEARTBEAT_URL=https://gbtmbuzlnxdjcexppomf.supabase.co/functions/v1/watcher-heartbeat"
     "LIVE_VIEW_HEARTBEAT_SECONDS=30"
     "LIVE_VIEW_MAX_VIEWERS=3"
+    "CLIPS_DIR=$clipsDir"
 )
 if ($liveEnabled) { $profile += "LIVE_VIEW_ORIGIN=https://${endpoint}:8767" }
 [IO.File]::WriteAllLines((Join-Path $install '.env'), $profile, [Text.UTF8Encoding]::new($false))

@@ -143,6 +143,9 @@ Type: dirifempty; Name: "{localappdata}\{#AppName}"
 
 ; ---------------------------------------------------------------------------
 [Code]
+var
+  NasPathPage: TInputQueryWizardPage;
+
 // Show a warning if the OS is older than Windows 10 (belt-and-suspenders,
 // since MinVersion already blocks older versions at setup start).
 function InitializeSetup(): Boolean;
@@ -209,6 +212,15 @@ begin
     MsgBox('The Watcher was installed for this user, but the LAN firewall rule was not added. Ask IT to allow TCP 8767 on the Private profile before using live supervision.', mbInformation, MB_OK);
 end;
 
+procedure SaveNasDestination();
+var
+  NasPath: String;
+begin
+  NasPath := Trim(NasPathPage.Values[0]);
+  if not SaveStringToFile(ExpandConstant('{app}\operator-nas-path.txt'), NasPath, False) then
+    RaiseException('Could not save the final clips NAS destination.');
+end;
+
 procedure InitializeOperatorProvisioning();
 var
   ResultCode: Integer;
@@ -222,6 +234,34 @@ begin
     '" -InstallDir "' + ExpandConstant('{app}') + '"', '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
     RaiseException('The Watcher could not complete local certificate provisioning. The installation was not started.');
+end;
+
+procedure InitializeWizard();
+begin
+  NasPathPage := CreateInputQueryPage(
+    wpSelectTasks,
+    'Clips finales en NAS',
+    'Seleccione la ruta de destino para los clips combinados',
+    'The Watcher conserva segmentos y previews en el PC Operador. Solo los MP4 finales combinados se guardan en el NAS.'
+  );
+  NasPathPage.Add('Ruta UNC del NAS (requerida):', False);
+  NasPathPage.Values[0] := '\\SIG-SLC-Storage\Storage3\';
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  NasPath: String;
+begin
+  Result := True;
+  if CurPageID = NasPathPage.ID then
+  begin
+    NasPath := Trim(NasPathPage.Values[0]);
+    if (NasPath = '') or (Copy(NasPath, 1, 2) <> '\\') then
+    begin
+      MsgBox('Ingresa una ruta UNC valida para el NAS, por ejemplo \\SIG-SLC-Storage\Storage3\Operator 45.', mbError, MB_OK);
+      Result := False;
+    end;
+  end;
 end;
 
 function IsLegacyInstall(): Boolean;
@@ -238,8 +278,12 @@ begin
   else if CurStep = ssPostInstall then
   begin
     WriteOperatorProfile();
-    InitializeOperatorProvisioning();
-    if FileExists(ExpandConstant('{app}\live-view-enabled.flag')) then
-      ConfigureLiveViewFirewall();
+    if not IsLegacyInstall() then
+    begin
+      SaveNasDestination();
+      InitializeOperatorProvisioning();
+      if FileExists(ExpandConstant('{app}\live-view-enabled.flag')) then
+        ConfigureLiveViewFirewall();
+    end;
   end;
 end;
