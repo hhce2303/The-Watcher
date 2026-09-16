@@ -259,6 +259,17 @@ $create.Add_Click({
             '-ProvisioningRequest', $path, '-OutDir', $packageDir,
             '-MkcertPath', $mkcert
         ) -WorkingDirectory $PSScriptRoot
+        # The build is intentionally delegated to its own visible console so
+        # PyInstaller/Inno errors remain inspectable. Do not leave this form in
+        # a fake perpetual "generating" state after that handoff.
+        $progress.Visible = $false
+        $create.Enabled = $true
+        $stationIdBox.Enabled = $true
+        $stationNumberBox.Enabled = $true
+        $endpointBox.Enabled = $true
+        $outputBox.Enabled = $true
+        $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 90, 160)
+        $status.Text = "Build iniciado en la consola. El Setup aparecera en: $packageDir"
     } catch {
         $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
         $status.Text = "No se pudo crear la solicitud: $($_.Exception.Message)"
