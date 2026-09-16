@@ -193,10 +193,10 @@ $openFolder.Size = [System.Drawing.Size]::new(150, 34)
 $openFolder.Visible = $false
 $form.Controls.Add($openFolder)
 
-$script:setupPackageDir = ''
 $openFolder.Add_Click({
-    if ($script:setupPackageDir -and (Test-Path -LiteralPath $script:setupPackageDir)) {
-        Start-Process -FilePath 'explorer.exe' -ArgumentList $script:setupPackageDir
+    param($sender, $eventArgs)
+    if ($sender.Tag -and (Test-Path -LiteralPath ([string]$sender.Tag))) {
+        Start-Process -FilePath 'explorer.exe' -ArgumentList ([string]$sender.Tag)
     }
 })
 
@@ -237,7 +237,7 @@ $create.Add_Click({
             return
         }
         $packageDir = Join-Path $directory (Join-Path 'packages' ("station-{0}-id-{1}" -f $stationNumber, $stationId))
-        $script:setupPackageDir = $packageDir
+        $openFolder.Tag = $packageDir
         $openFolder.Visible = $false
         $create.Enabled = $false
         $stationIdBox.Enabled = $false
@@ -256,37 +256,46 @@ $create.Add_Click({
         $processInfo.WorkingDirectory = $PSScriptRoot
         $processInfo.UseShellExecute = $false
         $processInfo.CreateNoWindow = $true
-        $script:setupBuildProcess = [System.Diagnostics.Process]::Start($processInfo)
+        $setupBuildProcess = [System.Diagnostics.Process]::Start($processInfo)
 
-        # Event handlers execute in their own scope. Keep the timer in script
-        # state instead of closing over a local variable (StrictMode otherwise
-        # raises "Variable '$poll' has not been set" on the first tick).
-        $script:setupBuildTimer = [System.Windows.Forms.Timer]::new()
-        $script:setupBuildTimer.Interval = 500
-        $script:setupBuildTimer.Add_Tick({
-            if (-not $script:setupBuildProcess.HasExited) { return }
-            $script:setupBuildTimer.Stop()
-            $progress.Visible = $false
-            $create.Enabled = $true
-            $stationIdBox.Enabled = $true
-            $stationNumberBox.Enabled = $true
-            $endpointBox.Enabled = $true
-            $outputBox.Enabled = $true
-            $setup = Join-Path $script:setupPackageDir 'Setup-The Watcher.exe'
-            if ($script:setupBuildProcess.ExitCode -eq 0 -and (Test-Path -LiteralPath $setup -PathType Leaf)) {
-                $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 112, 60)
-                $status.Text = "Instalador listo: $setup"
-                $openFolder.Visible = $true
+        # WinForms event callbacks run in their own PowerShell scope. Store
+        # every state value on the .NET timer instead of referencing a local,
+        # global, or script-scoped variable from inside the callback.
+        $setupBuildTimer = [System.Windows.Forms.Timer]::new()
+        $setupBuildTimer.Interval = 500
+        $setupBuildTimer | Add-Member -NotePropertyName BuildProcess -NotePropertyValue $setupBuildProcess
+        $setupBuildTimer | Add-Member -NotePropertyName PackageDir -NotePropertyValue $packageDir
+        $setupBuildTimer | Add-Member -NotePropertyName Ui -NotePropertyValue ([pscustomobject]@{
+            Progress = $progress; Create = $create; StationId = $stationIdBox
+            StationNumber = $stationNumberBox; Endpoint = $endpointBox; Output = $outputBox
+            Status = $status; OpenFolder = $openFolder
+        })
+        $setupBuildTimer.Add_Tick({
+            param($sender, $eventArgs)
+            $process = $sender.BuildProcess
+            if (-not $process.HasExited) { return }
+            $sender.Stop()
+            $ui = $sender.Ui
+            $ui.Progress.Visible = $false
+            $ui.Create.Enabled = $true
+            $ui.StationId.Enabled = $true
+            $ui.StationNumber.Enabled = $true
+            $ui.Endpoint.Enabled = $true
+            $ui.Output.Enabled = $true
+            $setup = Join-Path $sender.PackageDir 'Setup-The Watcher.exe'
+            if ($process.ExitCode -eq 0 -and (Test-Path -LiteralPath $setup -PathType Leaf)) {
+                $ui.Status.ForeColor = [System.Drawing.Color]::FromArgb(0, 112, 60)
+                $ui.Status.Text = "Instalador listo: $setup"
+                $ui.OpenFolder.Visible = $true
                 [System.Windows.Forms.MessageBox]::Show("El Setup esta listo para compartir con el Operador.`n`n$setup", 'Setup listo', 'OK', 'Information') | Out-Null
             } else {
-                $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
-                $status.Text = 'No se pudo generar el Setup. Revisa que Inno Setup este instalado y vuelve a intentarlo.'
-                [System.Windows.Forms.MessageBox]::Show($status.Text, 'Error de build', 'OK', 'Error') | Out-Null
+                $ui.Status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
+                $ui.Status.Text = 'No se pudo generar el Setup. Revisa que Inno Setup este instalado y vuelve a intentarlo.'
+                [System.Windows.Forms.MessageBox]::Show($ui.Status.Text, 'Error de build', 'OK', 'Error') | Out-Null
             }
-            $script:setupBuildTimer.Dispose()
-            $script:setupBuildTimer = $null
+            $sender.Dispose()
         })
-        $script:setupBuildTimer.Start()
+        $setupBuildTimer.Start()
     } catch {
         $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
         $status.Text = "No se pudo crear la solicitud: $($_.Exception.Message)"
