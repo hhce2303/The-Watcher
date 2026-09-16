@@ -122,5 +122,40 @@ if (Test-Path -LiteralPath $trustScript) {
     Copy-Item -LiteralPath $trustScript -Destination (Join-Path $trustDir 'Install-WatcherSupervisorTrust.ps1') -Force
 }
 
+# The daemon owns Ed25519 generation. Start it once now, wait for its
+# user-scoped identity file, then export an enrolment document containing only
+# the device id and public PEM. The private PEM remains in browser_local under
+# the Operator profile and is never copied to this package/trust folder.
+$watcherExe = Join-Path $install 'The Watcher.exe'
+if (-not (Test-Path -LiteralPath $watcherExe -PathType Leaf)) {
+    throw "The Watcher executable was not found: $watcherExe"
+}
+$identityPath = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'The Watcher') 'browser_local') 'device_identity.json'
+$daemon = Start-Process -FilePath $watcherExe -ArgumentList '--daemon' -WorkingDirectory $install -PassThru
+$deadline = [DateTime]::UtcNow.AddSeconds(45)
+while (-not (Test-Path -LiteralPath $identityPath -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) {
+    if ($daemon.HasExited) { throw "The Watcher daemon stopped before creating its device identity (exit $($daemon.ExitCode))." }
+    Start-Sleep -Milliseconds 500
+}
+if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
+    throw 'The Watcher did not create its device identity within 45 seconds.'
+}
+$identity = Get-Content -LiteralPath $identityPath -Raw -Encoding utf8 | ConvertFrom-Json
+if (-not $identity.device_id -or -not $identity.public_key_pem -or -not $identity.private_key_pem) {
+    throw 'The generated device identity is incomplete.'
+}
+$enrollment = [ordered]@{
+    station_id = $stationId
+    station_number = $stationNumber
+    device_id = [string]$identity.device_id
+    public_key_pem = [string]$identity.public_key_pem
+}
+[IO.File]::WriteAllText(
+    (Join-Path $trustDir 'watcher-enrollment-public.json'),
+    (($enrollment | ConvertTo-Json) + [Environment]::NewLine),
+    [Text.UTF8Encoding]::new($false)
+)
+
 Write-Host "The Watcher station $stationNumber (ID $stationId) is provisioned." -ForegroundColor Green
 Write-Host "Supervisor public trust package: $trustDir" -ForegroundColor Yellow
+Write-Host "Daily enrollment public key: $(Join-Path $trustDir 'watcher-enrollment-public.json')" -ForegroundColor Yellow

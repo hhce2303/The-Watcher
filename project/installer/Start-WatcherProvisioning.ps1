@@ -249,53 +249,17 @@ $create.Add_Click({
         $status.ForeColor = [System.Drawing.Color]::FromArgb(0, 90, 160)
         $status.Text = 'Generando el instalador. Esto puede tardar varios minutos...'
 
-        $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -ProvisioningRequest "{1}" -OutDir "{2}" -MkcertPath "{3}"' -f $builder, $path, $packageDir, $mkcert
-        $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
-        $processInfo.FileName = 'powershell.exe'
-        $processInfo.Arguments = $arguments
-        $processInfo.WorkingDirectory = $PSScriptRoot
-        $processInfo.UseShellExecute = $false
-        $processInfo.CreateNoWindow = $true
-        $setupBuildProcess = [System.Diagnostics.Process]::Start($processInfo)
-
-        # WinForms event callbacks run in their own PowerShell scope. Store
-        # every state value on the .NET timer instead of referencing a local,
-        # global, or script-scoped variable from inside the callback.
-        $setupBuildTimer = [System.Windows.Forms.Timer]::new()
-        $setupBuildTimer.Interval = 500
-        $setupBuildTimer | Add-Member -NotePropertyName BuildProcess -NotePropertyValue $setupBuildProcess
-        $setupBuildTimer | Add-Member -NotePropertyName PackageDir -NotePropertyValue $packageDir
-        $setupBuildTimer | Add-Member -NotePropertyName Ui -NotePropertyValue ([pscustomobject]@{
-            Progress = $progress; Create = $create; StationId = $stationIdBox
-            StationNumber = $stationNumberBox; Endpoint = $endpointBox; Output = $outputBox
-            Status = $status; OpenFolder = $openFolder
-        })
-        $setupBuildTimer.Add_Tick({
-            param($sender, $eventArgs)
-            $process = $sender.BuildProcess
-            if (-not $process.HasExited) { return }
-            $sender.Stop()
-            $ui = $sender.Ui
-            $ui.Progress.Visible = $false
-            $ui.Create.Enabled = $true
-            $ui.StationId.Enabled = $true
-            $ui.StationNumber.Enabled = $true
-            $ui.Endpoint.Enabled = $true
-            $ui.Output.Enabled = $true
-            $setup = Join-Path $sender.PackageDir 'Setup-The Watcher.exe'
-            if ($process.ExitCode -eq 0 -and (Test-Path -LiteralPath $setup -PathType Leaf)) {
-                $ui.Status.ForeColor = [System.Drawing.Color]::FromArgb(0, 112, 60)
-                $ui.Status.Text = "Instalador listo: $setup"
-                $ui.OpenFolder.Visible = $true
-                [System.Windows.Forms.MessageBox]::Show("El Setup esta listo para compartir con el Operador.`n`n$setup", 'Setup listo', 'OK', 'Information') | Out-Null
-            } else {
-                $ui.Status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
-                $ui.Status.Text = 'No se pudo generar el Setup. Revisa que Inno Setup este instalado y vuelve a intentarlo.'
-                [System.Windows.Forms.MessageBox]::Show($ui.Status.Text, 'Error de build', 'OK', 'Error') | Out-Null
-            }
-            $sender.Dispose()
-        })
-        $setupBuildTimer.Start()
+        # A visible build console is intentionally used here. It provides the
+        # real PyInstaller/Inno/mkcert diagnostic instead of hiding it behind
+        # fragile WinForms callback state, while the IT user still needs only
+        # one click and no JSON/command handling.
+        $status.Text = 'La consola de build fue abierta. Al terminar, comparte el Setup de la carpeta packages.'
+        Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $builder,
+            '-ProvisioningRequest', $path, '-OutDir', $packageDir,
+            '-MkcertPath', $mkcert
+        ) -WorkingDirectory $PSScriptRoot
+        $form.Close()
     } catch {
         $status.ForeColor = [System.Drawing.Color]::FromArgb(180, 30, 30)
         $status.Text = "No se pudo crear la solicitud: $($_.Exception.Message)"

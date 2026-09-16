@@ -115,6 +115,7 @@ Filename: "{app}\{#AppExeName}"; \
     Parameters: "--daemon"; \
     Description: "Iniciar {#AppName} ahora"; \
     Flags: nowait postinstall skipifsilent; \
+    Check: IsLegacyInstall; \
     WorkingDir: "{app}"
 
 ; ---------------------------------------------------------------------------
@@ -221,6 +222,13 @@ begin
     '" -InstallDir "' + ExpandConstant('{app}') + '"', '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
     RaiseException('The Watcher could not complete local certificate provisioning. The installation was not started.');
+end;
+
+function IsLegacyInstall(): Boolean;
+begin
+  // Provisioned installs are started by Initialize-WatcherOperator.ps1 so it
+  // can export the destination-generated public enrollment key exactly once.
+  Result := not FileExists(ExpandConstant('{app}\operator-provisioning.json'));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
