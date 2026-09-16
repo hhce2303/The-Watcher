@@ -239,13 +239,13 @@ end;
 procedure InitializeWizard();
 begin
   NasPathPage := CreateInputQueryPage(
-    wpSelectTasks,
+    wpWelcome,
     'Clips finales en NAS',
     'Seleccione la ruta de destino para los clips combinados',
     'The Watcher conserva segmentos y previews en el PC Operador. Solo los MP4 finales combinados se guardan en el NAS.'
   );
   NasPathPage.Add('Ruta UNC del NAS (requerida):', False);
-  NasPathPage.Values[0] := '\\SIG-SLC-Storage\Storage3\';
+  NasPathPage.Values[0] := '';
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
