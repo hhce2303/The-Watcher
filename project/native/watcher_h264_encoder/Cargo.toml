@@ -1,0 +1,39 @@
+# watcher_h264_encoder — SPIKE crate (see docs/migration/SPIKE-editor-export-encoder.md).
+#
+# Feasibility check for replacing the H.264 ENCODE step only inside
+# EditorExportPort's re-encode path (`editor_export_adapter.py::_reencode_trim`)
+# with a Rust-native encoder, following the ADR-0006 pattern (PyO3 + maturin,
+# sibling crate to native/watcher_segments/, ENGINE_READY-style gate to be added
+# later — NOT wired in this spike).
+#
+# Scope (deliberately narrow — see SPIKE doc "explicitly scoped OUT"):
+# this crate encodes already-decoded/scaled raw I420 (YUV420P) frames to an
+# H.264 bitstream. Decode, scale/fps-normalize, AAC audio, and MP4 mux all stay
+# on the existing FFmpeg subprocess, unchanged.
+[package]
+name = "watcher_h264_encoder"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "SPIKE: openh264-backed H.264 encoder for The Watcher's EditorExportPort re-encode path"
+
+[lib]
+name = "watcher_h264_encoder"
+# cdylib -> loadable Python extension; rlib -> so encode_frames_impl is
+# unit-testable without a Python runtime (mirrors watcher_segments).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+
+# Cisco OpenH264 via FFI (not pure Rust) — BSD-2-Clause wrapper crate, BSD-2-Clause
+# C core. Default `source` feature statically compiles Cisco's C source at build
+# time via the `cc` crate -> no runtime DLL (verified in this spike: see SPIKE
+# doc "Build verification"). NOTE (unresolved, flagged for legal review, not an
+# engineering decision): this source-build path gets no MPEG-LA/Cisco patent
+# pass-through, unlike Cisco's separately-downloaded prebuilt binary.
+openh264 = "0.9.8"
+
+[profile.release]
+opt-level = 3
+lto = true

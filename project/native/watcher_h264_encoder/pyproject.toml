@@ -1,0 +1,18 @@
+# maturin build config for the watcher_h264_encoder SPIKE extension module.
+#   Dev build into the active venv:   maturin develop --release
+#   Wheel for packaging:              maturin build --release
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "watcher-h264-encoder"
+version = "0.1.0"
+description = "SPIKE: openh264-backed H.264 encoder for The Watcher's EditorExportPort re-encode path"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.maturin]
+# The .pyd/.so is imported as `import watcher_h264_encoder`.
+module-name = "watcher_h264_encoder"
+features = ["pyo3/extension-module"]
