@@ -1,0 +1,33 @@
+name: Build daemon (Windows)
+
+# Manual build of the headless daemon/sidecar bundle (PyInstaller one-dir) for
+# hand-testing on a Windows machine. Uses the same spec as installer/build.ps1.
+# The native Rust segment engine is skipped: the app falls back to FFmpeg.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+          cache-dependency-path: project/requirements.txt
+      - name: Install Python dependencies
+        run: pip install -r project/requirements.txt
+      - name: Install FFmpeg
+        run: choco install ffmpeg -y
+      - name: PyInstaller
+        working-directory: project
+        run: pyinstaller --noconfirm --distpath dist --workpath build "installer/The Watcher.spec"
+      - name: Stage .env
+        shell: pwsh
+        run: Copy-Item project/.env.example "project/dist/The Watcher/.env"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: the-watcher-daemon-windows
+          path: project/dist/The Watcher
+          retention-days: 14
