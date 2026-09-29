@@ -5,6 +5,9 @@ name: Build daemon (Windows)
 # The native Rust segment engine is skipped: the app falls back to FFmpeg.
 on:
   workflow_dispatch:
+  push:
+    branches: [spike/editor-export-rust-encoder]
+    paths: [.github/workflows/build-daemon.yml]
 
 jobs:
   build:
