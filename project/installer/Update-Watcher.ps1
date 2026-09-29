@@ -81,6 +81,27 @@ if (Test-Path $CertsDest) {
     Write-Warning "No certs\ in $InstallDir. Re-run with -CertsFrom <provisioning dir>."
 }
 
+# Trust the provisioning test CA for the current user (idempotent). Needs an
+# interactive desktop session: Windows shows a confirmation dialog. Over SSH it
+# fails with "request not supported" - run this script locally, or use
+# `certutil -addstore Root <ca.pem>` from an elevated prompt (machine-wide).
+$CaPem = Join-Path $CertsDest "watcher-test-rootCA.pem"
+if (Test-Path $CaPem) {
+    try {
+        $ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $CaPem
+        $trusted = @(Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root | Where-Object Thumbprint -eq $ca.Thumbprint)
+        if ($trusted.Count -gt 0) {
+            Write-Host "Test CA already trusted." -ForegroundColor Green
+        } else {
+            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store "Root", "CurrentUser"
+            $store.Open("ReadWrite"); $store.Add($ca); $store.Close()
+            Write-Host "Test CA trusted for current user." -ForegroundColor Green
+        }
+    } catch {
+        Write-Warning "Could not trust test CA ($($_.Exception.Message)). Run locally, or elevated: certutil -addstore Root `"$CaPem`""
+    }
+}
+
 if ($Start) {
     Start-Process (Join-Path $InstallDir $ExeName) -ArgumentList "--daemon" -WorkingDirectory $InstallDir
     Write-Host "Daemon started."
