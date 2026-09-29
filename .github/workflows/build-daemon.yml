@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
   push:
     branches: [spike/editor-export-rust-encoder]
-    paths: [.github/workflows/build-daemon.yml]
+    paths: [.github/workflows/build-daemon.yml, project/installer/Update-Watcher.ps1]
 
 jobs:
   build:
@@ -28,7 +28,9 @@ jobs:
         run: pyinstaller --noconfirm --distpath dist --workpath build "installer/The Watcher.spec"
       - name: Stage .env
         shell: pwsh
-        run: Copy-Item project/.env.example "project/dist/The Watcher/.env"
+        run: |
+          Copy-Item project/.env.example "project/dist/The Watcher/.env"
+          Copy-Item project/installer/Update-Watcher.ps1 "project/dist/The Watcher/"
       - uses: actions/upload-artifact@v4
         with:
           name: the-watcher-daemon-windows
