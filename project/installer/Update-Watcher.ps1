@@ -72,7 +72,7 @@ if ($CertsFrom -ne "") {
 }
 if (-not (Test-Path $EnvDest)) {
     $example = Join-Path $SourceDir ".env"
-    if (Test-Path $example) { Copy-Item $example $EnvDest; Write-Warning ".env created from example — edit it." }
+    if (Test-Path $example) { Copy-Item $example $EnvDest; Write-Warning ".env created from example - edit it." }
 }
 
 if (Test-Path $CertsDest) {
