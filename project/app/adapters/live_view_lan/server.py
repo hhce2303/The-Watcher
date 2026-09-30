@@ -28,6 +28,8 @@ _BOUNDARY = b"watcher-live-frame"
 _FRAME_POLL_SECONDS = 0.1
 # Resend an unchanged frame this often so a static screen still proves liveness.
 _KEEPALIVE_SECONDS = 5.0
+# How often the WebSocket pump re-reads the monitor list (hot-plugged displays).
+_MONITOR_REFRESH_SECONDS = 5.0
 
 
 class _FrameGate:
@@ -218,6 +220,22 @@ class LiveViewLanAdapter(LiveViewPort):
     async def _css(self, _request: web.Request) -> web.Response:
         return web.Response(text=_CSS, content_type="text/css")
 
+    def _claim_viewer(self, viewer: str) -> bool:
+        """Take (or share) the slot of a supervisor identity; False when full."""
+        with self._viewer_lock:
+            if viewer not in self._viewer_streams and len(self._viewer_streams) >= self._settings.live_view_max_viewers:
+                return False
+            self._viewer_streams[viewer] = self._viewer_streams.get(viewer, 0) + 1
+            return True
+
+    def _release_viewer(self, viewer: str) -> None:
+        with self._viewer_lock:
+            remaining = self._viewer_streams.get(viewer, 1) - 1
+            if remaining > 0:
+                self._viewer_streams[viewer] = remaining
+            else:
+                self._viewer_streams.pop(viewer, None)
+
     async def _health(self, _request: web.Request) -> web.Response:
         return web.json_response({"status": "ok", "device_id": self._sessions.device_id})
 
@@ -246,11 +264,8 @@ class LiveViewLanAdapter(LiveViewPort):
         # renewals each open a new session for the same supervisor and must
         # share one slot, otherwise stale sessions exhaust the limit.
         viewer = self._sessions.require_session(capability.session_token).subject
-        with self._viewer_lock:
-            is_new_viewer = viewer not in self._viewer_streams
-            if is_new_viewer and len(self._viewer_streams) >= self._settings.live_view_max_viewers:
-                raise web.HTTPTooManyRequests(text="viewer limit reached")
-            self._viewer_streams[viewer] = self._viewer_streams.get(viewer, 0) + 1
+        if not self._claim_viewer(viewer):
+            raise web.HTTPTooManyRequests(text="viewer limit reached")
         response = web.StreamResponse(headers={"Content-Type": "multipart/x-mixed-replace; boundary=watcher-live-frame", "Cache-Control": "no-store"})
         await response.prepare(request)
         gate = _FrameGate(_KEEPALIVE_SECONDS)
@@ -273,19 +288,59 @@ class LiveViewLanAdapter(LiveViewPort):
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
-            with self._viewer_lock:
-                remaining = self._viewer_streams.get(viewer, 1) - 1
-                if remaining > 0:
-                    self._viewer_streams[viewer] = remaining
-                else:
-                    self._viewer_streams.pop(viewer, None)
+            self._release_viewer(viewer)
         return response
+
+    async def _pump_frames(self, ws: web.WebSocketResponse, session_token: str) -> None:
+        """Push every monitor's changed preview as ``[index byte][JPEG]`` binary frames.
+
+        One WebSocket carries all monitors: browsers cap HTTP/1.1 at 6 connections
+        per host, and one endless image stream per monitor starved other tabs.
+        A slow viewer just skips intermediate frames (send awaits the socket).
+        """
+        gates: dict[int, _FrameGate] = {}
+        paths: dict[int, Path] = {}
+        refreshed = float("-inf")
+        try:
+            while not ws.closed:
+                self._sessions.require_session(session_token)
+                now = time.monotonic()
+                if now - refreshed >= _MONITOR_REFRESH_SECONDS:
+                    paths = {
+                        m.index: self._settings.segment_dir / f"m{m.index}" / "preview.jpg"
+                        for m in self._api.recording.get_monitors() if 0 <= m.index < 256
+                    }
+                    refreshed = now
+                for index, path in paths.items():
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    signature = (stat.st_mtime_ns, stat.st_size)
+                    gate = gates.setdefault(index, _FrameGate(_KEEPALIVE_SECONDS))
+                    if not gate.should_send(signature, now):
+                        continue
+                    try:
+                        frame = path.read_bytes()
+                    except OSError:
+                        continue  # ffmpeg is mid-rewrite; retry on the next poll
+                    if frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
+                        await ws.send_bytes(bytes((index,)) + frame)
+                        gate.mark_sent(signature, time.monotonic())
+                await asyncio.sleep(_FRAME_POLL_SECONDS)
+        except AuthenticationError as exc:
+            logger.info("[live-view] stream closed: {}", exc)
+            await ws.close(code=1008, message=b"session expired")
+        except ConnectionResetError:
+            pass
 
     async def _events(self, request: web.Request) -> web.WebSocketResponse:
         if request.headers.get("Origin") != self._settings.live_view_origin:
             raise web.HTTPForbidden(text="invalid websocket origin")
         ws = web.WebSocketResponse(max_msg_size=_MAX_WS_MESSAGE, heartbeat=20)
         await ws.prepare(request)
+        pump: asyncio.Task[None] | None = None
+        claimed: str | None = None
         try:
             first = await asyncio.wait_for(ws.receive_json(), timeout=5)
             if not isinstance(first, dict) or first.get("type") != "auth":
@@ -296,15 +351,32 @@ class LiveViewLanAdapter(LiveViewPort):
                 if message.type == WSMsgType.TEXT and message.data == '{"type":"ping"}':
                     self._sessions.require_session(session.token)
                     await ws.send_json({"type": "pong"})
+                elif message.type == WSMsgType.TEXT and message.data == '{"type":"subscribe"}':
+                    if pump is not None:
+                        continue
+                    self._sessions.require_session(session.token)
+                    if not self._claim_viewer(session.subject):
+                        await ws.send_json({"type": "error", "reason": "viewer limit reached"})
+                        await ws.close(code=1013, message=b"viewer limit reached")
+                        break
+                    claimed = session.subject
+                    pump = asyncio.create_task(self._pump_frames(ws, session.token))
                 elif message.type == WSMsgType.TEXT:
                     await ws.close(code=1008, message=b"read-only websocket")
         except (AuthenticationError, asyncio.TimeoutError) as exc:
             # Reason only — never the assertion itself.
             logger.warning("[live-view] session rejected: {}", exc or type(exc).__name__)
             await ws.close(code=1008, message=b"authentication rejected")
+        finally:
+            if pump is not None:
+                pump.cancel()
+                with suppress(asyncio.CancelledError):
+                    await pump
+            if claimed is not None:
+                self._release_viewer(claimed)
         return ws
 
 
 _HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"/embed.css\"></head><body data-parent-origin=\"__PARENT__\"><p id=\"status\" role=\"status\"></p><div id=\"monitors\"></div><script src=\"/embed.js\"></script></body></html>"""
-_CSS = "body{margin:0;background:#101827;color:#e5e7eb;font:14px system-ui;padding:10px}.tile{margin:0}.tile img{width:100%;display:block;background:#000}.tile strong{display:block;padding:6px}"
-_JS = """(()=>{const parent= document.body.dataset.parentOrigin,status=document.getElementById('status'),root=document.getElementById('monitors');let ws,session,renew;function again(ms){clearTimeout(renew);renew=setTimeout(()=>window.parent.postMessage({type:'watcher:ready'},parent),ms)}function begin(assertion){if(ws)ws.close();clearTimeout(renew);const mine=ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/events');mine.onopen=()=>mine.send(JSON.stringify({type:'auth',assertion}));mine.onmessage=async e=>{const m=JSON.parse(e.data);if(m.type!=='authenticated')return;session=m.session;const r=await fetch('/api/v1/monitors',{headers:{Authorization:'Bearer '+session},cache:'no-store'});if(!r.ok){status.textContent='No se pudieron abrir los monitores.';again(5000);return}const d=await r.json();status.textContent='';root.replaceChildren(...d.monitors.map(x=>{const a=document.createElement('article'),l=document.createElement('strong'),i=document.createElement('img');a.className='tile';l.textContent=x.name;i.alt=x.name;i.onerror=()=>again(2000);i.src=x.stream_url;a.append(l,i);return a}));again(Math.max(10,(m.expires_in||300)-60)*1000)};mine.onclose=()=>{if(!session&&ws===mine)status.textContent='Sesión rechazada o vencida.'}}window.addEventListener('message',e=>{if(e.source!==window.parent||e.origin!==parent||!e.data||e.data.type!=='watcher:session'||typeof e.data.assertion!=='string')return;session=null;begin(e.data.assertion)});window.parent.postMessage({type:'watcher:ready'},parent)})();"""
+_CSS = "body{margin:0;background:#101827;color:#e5e7eb;font:14px system-ui;padding:10px}.tile{margin:0}.tile canvas{width:100%;display:block;background:#000}.tile strong{display:block;padding:6px}"
+_JS = """(()=>{const parent= document.body.dataset.parentOrigin,status=document.getElementById('status'),root=document.getElementById('monitors');let ws,session,renew;function again(ms){clearTimeout(renew);renew=setTimeout(()=>window.parent.postMessage({type:'watcher:ready'},parent),ms)}function begin(assertion){if(ws)ws.close();clearTimeout(renew);const mine=ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/events'),tiles=new Map();mine.binaryType='arraybuffer';mine.onopen=()=>mine.send(JSON.stringify({type:'auth',assertion}));mine.onmessage=async e=>{if(typeof e.data!=='string'){const d=new Uint8Array(e.data),c=tiles.get(d[0]);if(!c||mine!==ws)return;const n=c._n=(c._n||0)+1;createImageBitmap(new Blob([d.subarray(1)],{type:'image/jpeg'})).then(b=>{if(n>=(c._drawn||0)){c._drawn=n;if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}c.getContext('2d').drawImage(b,0,0)}b.close()},()=>{});return}const m=JSON.parse(e.data);if(m.type==='error'){status.textContent=m.reason==='viewer limit reached'?'Límite de visores alcanzado.':'Error de supervisión.';return}if(m.type!=='authenticated')return;session=m.session;const r=await fetch('/api/v1/monitors',{headers:{Authorization:'Bearer '+session},cache:'no-store'});if(!r.ok){status.textContent='No se pudieron abrir los monitores.';again(5000);return}const d=await r.json();status.textContent='';root.replaceChildren(...d.monitors.map(x=>{const a=document.createElement('article'),l=document.createElement('strong'),c=document.createElement('canvas');a.className='tile';l.textContent=x.name;c.setAttribute('role','img');c.setAttribute('aria-label',x.name);tiles.set(x.index,c);a.append(l,c);return a}));if(mine===ws)mine.send(JSON.stringify({type:'subscribe'}));again(Math.max(10,(m.expires_in||300)-60)*1000)};mine.onclose=()=>{if(!session&&ws===mine)status.textContent='Sesión rechazada o vencida.'}}window.addEventListener('message',e=>{if(e.source!==window.parent||e.origin!==parent||!e.data||e.data.type!=='watcher:session'||typeof e.data.assertion!=='string')return;session=null;begin(e.data.assertion)});window.parent.postMessage({type:'watcher:ready'},parent)})();"""
