@@ -20,6 +20,10 @@ from loguru import logger
 
 from app.adapters.browser_local.auth import AuthenticationError, BrowserSessionManager
 from app.adapters.browser_local.identity import DeviceIdentityStore
+from app.adapters.live_view_lan.h264_feed import (
+    KIND_DELTA, KIND_JPEG, KIND_KEY, FeedConfig, H264Hub, H264Subscriber, MonitorSpec,
+    default_candidates, parse_resolution,
+)
 from app.core.ports.live_view_port import LiveViewPort
 
 _MAX_WS_MESSAGE = 16 * 1024
@@ -30,6 +34,8 @@ _FRAME_POLL_SECONDS = 0.1
 _KEEPALIVE_SECONDS = 5.0
 # How often the WebSocket pump re-reads the monitor list (hot-plugged displays).
 _MONITOR_REFRESH_SECONDS = 5.0
+# Pending H.264 items per viewer before it is considered too slow and resyncs.
+_VIDEO_QUEUE = 240
 
 
 class _FrameGate:
@@ -76,6 +82,7 @@ class LiveViewLanAdapter(LiveViewPort):
         self._viewer_streams: dict[str, int] = {}
         self._viewer_lock = threading.Lock()
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._hub: H264Hub | None = None
 
     @property
     def enrollment_payload(self) -> dict[str, str]:
@@ -146,6 +153,7 @@ class LiveViewLanAdapter(LiveViewPort):
         await web.TCPSite(self._runner, self._settings.live_view_bind_host, self._settings.live_view_port, ssl_context=context).start()
         self._stop_event = asyncio.Event()
         self._running = True
+        self._hub = self._make_hub(asyncio.get_running_loop())
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         self._ready.set()
         logger.info("[live-view] listening at {}", self._settings.live_view_origin)
@@ -155,7 +163,24 @@ class LiveViewLanAdapter(LiveViewPort):
             with suppress(asyncio.CancelledError):
                 await self._heartbeat_task
             self._heartbeat_task = None
+        if self._hub is not None:
+            self._hub.shutdown()
+            self._hub = None
         await self._runner.cleanup()
+
+    def _make_hub(self, loop: asyncio.AbstractEventLoop) -> H264Hub | None:
+        if getattr(self._settings, "live_view_transport", "h264") != "h264":
+            return None
+        from app.adapters.ffmpeg import encoder_selector  # noqa: PLC0415
+        from app.adapters.ffmpeg.ffmpeg_path import resolve_ffmpeg  # noqa: PLC0415
+
+        cfg = FeedConfig(
+            ffmpeg=resolve_ffmpeg(),
+            fps=max(1, getattr(self._settings, "live_view_video_fps", 24)),
+            width=max(320, getattr(self._settings, "live_view_video_width", 1280)),
+            kbps=max(200, getattr(self._settings, "live_view_video_kbps", 3000)),
+        )
+        return H264Hub(loop, cfg, default_candidates(lambda: encoder_selector.get_encoder("h264", realtime=True)[0]))
 
     async def _heartbeat_loop(self) -> None:
         """Publish a signed, non-media status signal for Daily's roster."""
@@ -291,12 +316,17 @@ class LiveViewLanAdapter(LiveViewPort):
             self._release_viewer(viewer)
         return response
 
-    async def _pump_frames(self, ws: web.WebSocketResponse, session_token: str) -> None:
-        """Push every monitor's changed preview as ``[index byte][JPEG]`` binary frames.
+    async def _pump_frames(self, ws: web.WebSocketResponse, session_token: str, *,
+                           out: "asyncio.Queue[tuple[str, Any]] | None" = None,
+                           jpeg_monitors: "set[int] | None" = None) -> None:
+        """Serve one viewer over its single WebSocket.
 
-        One WebSocket carries all monitors: browsers cap HTTP/1.1 at 6 connections
-        per host, and one endless image stream per monitor starved other tabs.
-        A slow viewer just skips intermediate frames (send awaits the socket).
+        Every binary frame is ``[kind][monitor index][payload]`` (kind 0 = JPEG,
+        1/2 = H.264 key/delta access unit). JPEGs come from the recorder's
+        preview files for ``jpeg_monitors`` (None = every monitor), only when
+        they changed; H.264 and control messages arrive through ``out``.
+        One connection per tab: browsers cap HTTP/1.1 at 6 per host, and one
+        endless image stream per monitor starved other tabs.
         """
         gates: dict[int, _FrameGate] = {}
         paths: dict[int, Path] = {}
@@ -312,6 +342,8 @@ class LiveViewLanAdapter(LiveViewPort):
                     }
                     refreshed = now
                 for index, path in paths.items():
+                    if jpeg_monitors is not None and index not in jpeg_monitors:
+                        continue
                     try:
                         stat = path.stat()
                     except OSError:
@@ -325,14 +357,65 @@ class LiveViewLanAdapter(LiveViewPort):
                     except OSError:
                         continue  # ffmpeg is mid-rewrite; retry on the next poll
                     if frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
-                        await ws.send_bytes(bytes((index,)) + frame)
+                        await ws.send_bytes(bytes((KIND_JPEG, index)) + frame)
                         gate.mark_sent(signature, time.monotonic())
-                await asyncio.sleep(_FRAME_POLL_SECONDS)
+                if out is None:
+                    await asyncio.sleep(_FRAME_POLL_SECONDS)
+                    continue
+                try:
+                    item = await asyncio.wait_for(out.get(), timeout=_FRAME_POLL_SECONDS)
+                except asyncio.TimeoutError:
+                    continue
+                while True:
+                    kind, payload = item
+                    if kind == "json":
+                        await ws.send_json(payload)
+                    else:
+                        await ws.send_bytes(payload)
+                    if out.empty():
+                        break
+                    item = out.get_nowait()
         except AuthenticationError as exc:
             logger.info("[live-view] stream closed: {}", exc)
             await ws.close(code=1008, message=b"session expired")
         except ConnectionResetError:
             pass
+
+    def _h264_subscribers(self, out: "asyncio.Queue[tuple[str, Any]]", jpeg_monitors: set[int]) -> "list[tuple[int, H264Subscriber]]":
+        """Subscribe one viewer to every monitor's shared H.264 feed."""
+        subs: list[tuple[int, H264Subscriber]] = []
+
+        def put(item: tuple[str, Any]) -> None:
+            try:
+                out.put_nowait(item)
+            except asyncio.QueueFull:  # viewer too slow: drop the backlog, resume at the next key frame
+                while not out.empty():
+                    out.get_nowait()
+                for _, sub in subs:
+                    sub.need_key = True
+
+        def make(monitor_index: int) -> H264Subscriber:
+            def on_config(i: int, codec: str) -> None:
+                put(("json", {"type": "video_config", "monitor": i, "codec": codec}))
+
+            def on_au(i: int, key: bool, data: bytes) -> None:
+                put(("bin", bytes((KIND_KEY if key else KIND_DELTA, i)) + data))
+
+            def on_failed(i: int) -> None:  # no encoder worked: serve this monitor as JPEG instead
+                jpeg_monitors.add(i)
+                put(("json", {"type": "video_config", "monitor": i, "codec": "mjpeg"}))
+
+            return H264Subscriber(on_config, on_au, on_failed)
+
+        for monitor in self._api.recording.get_monitors():
+            if not 0 <= monitor.index < 256:
+                continue
+            width, height = parse_resolution(getattr(monitor, "resolution", ""))
+            spec = MonitorSpec(monitor.index, getattr(monitor, "x", 0), getattr(monitor, "y", 0), width, height)
+            sub = make(monitor.index)
+            subs.append((monitor.index, sub))
+            self._hub.subscribe(spec, sub)
+        return subs
 
     async def _events(self, request: web.Request) -> web.WebSocketResponse:
         if request.headers.get("Origin") != self._settings.live_view_origin:
@@ -341,6 +424,7 @@ class LiveViewLanAdapter(LiveViewPort):
         await ws.prepare(request)
         pump: asyncio.Task[None] | None = None
         claimed: str | None = None
+        subs: list[tuple[int, H264Subscriber]] = []
         try:
             first = await asyncio.wait_for(ws.receive_json(), timeout=5)
             if not isinstance(first, dict) or first.get("type") != "auth":
@@ -348,10 +432,17 @@ class LiveViewLanAdapter(LiveViewPort):
             session = self._sessions.open_session(str(first.get("assertion", "")))
             await ws.send_json({"type": "authenticated", "session": session.token, "expires_in": 300})
             async for message in ws:
-                if message.type == WSMsgType.TEXT and message.data == '{"type":"ping"}':
+                if message.type != WSMsgType.TEXT:
+                    continue
+                try:
+                    command = json.loads(message.data)
+                except ValueError:
+                    command = None
+                kind = command.get("type") if isinstance(command, dict) else None
+                if kind == "ping":
                     self._sessions.require_session(session.token)
                     await ws.send_json({"type": "pong"})
-                elif message.type == WSMsgType.TEXT and message.data == '{"type":"subscribe"}':
+                elif kind == "subscribe":
                     if pump is not None:
                         continue
                     self._sessions.require_session(session.token)
@@ -360,14 +451,20 @@ class LiveViewLanAdapter(LiveViewPort):
                         await ws.close(code=1013, message=b"viewer limit reached")
                         break
                     claimed = session.subject
-                    pump = asyncio.create_task(self._pump_frames(ws, session.token))
-                elif message.type == WSMsgType.TEXT:
+                    out = jpeg_monitors = None
+                    if command.get("codec") == "h264" and self._hub is not None:
+                        out, jpeg_monitors = asyncio.Queue(maxsize=_VIDEO_QUEUE), set()
+                        subs = self._h264_subscribers(out, jpeg_monitors)
+                    pump = asyncio.create_task(self._pump_frames(ws, session.token, out=out, jpeg_monitors=jpeg_monitors))
+                else:
                     await ws.close(code=1008, message=b"read-only websocket")
         except (AuthenticationError, asyncio.TimeoutError) as exc:
             # Reason only — never the assertion itself.
             logger.warning("[live-view] session rejected: {}", exc or type(exc).__name__)
             await ws.close(code=1008, message=b"authentication rejected")
         finally:
+            for index, sub in subs:
+                self._hub.unsubscribe(index, sub)
             if pump is not None:
                 pump.cancel()
                 with suppress(asyncio.CancelledError):
@@ -379,4 +476,45 @@ class LiveViewLanAdapter(LiveViewPort):
 
 _HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"/embed.css\"></head><body data-parent-origin=\"__PARENT__\"><p id=\"status\" role=\"status\"></p><div id=\"monitors\"></div><script src=\"/embed.js\"></script></body></html>"""
 _CSS = "body{margin:0;background:#101827;color:#e5e7eb;font:14px system-ui;padding:10px}.tile{margin:0}.tile canvas{width:100%;display:block;background:#000}.tile strong{display:block;padding:6px}"
-_JS = """(()=>{const parent= document.body.dataset.parentOrigin,status=document.getElementById('status'),root=document.getElementById('monitors');let ws,session,renew;function again(ms){clearTimeout(renew);renew=setTimeout(()=>window.parent.postMessage({type:'watcher:ready'},parent),ms)}function begin(assertion){if(ws)ws.close();clearTimeout(renew);const mine=ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/events'),tiles=new Map();mine.binaryType='arraybuffer';mine.onopen=()=>mine.send(JSON.stringify({type:'auth',assertion}));mine.onmessage=async e=>{if(typeof e.data!=='string'){const d=new Uint8Array(e.data),c=tiles.get(d[0]);if(!c||mine!==ws)return;const n=c._n=(c._n||0)+1;createImageBitmap(new Blob([d.subarray(1)],{type:'image/jpeg'})).then(b=>{if(n>=(c._drawn||0)){c._drawn=n;if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}c.getContext('2d').drawImage(b,0,0)}b.close()},()=>{});return}const m=JSON.parse(e.data);if(m.type==='error'){status.textContent=m.reason==='viewer limit reached'?'Límite de visores alcanzado.':'Error de supervisión.';return}if(m.type!=='authenticated')return;session=m.session;const r=await fetch('/api/v1/monitors',{headers:{Authorization:'Bearer '+session},cache:'no-store'});if(!r.ok){status.textContent='No se pudieron abrir los monitores.';again(5000);return}const d=await r.json();status.textContent='';root.replaceChildren(...d.monitors.map(x=>{const a=document.createElement('article'),l=document.createElement('strong'),c=document.createElement('canvas');a.className='tile';l.textContent=x.name;c.setAttribute('role','img');c.setAttribute('aria-label',x.name);tiles.set(x.index,c);a.append(l,c);return a}));if(mine===ws)mine.send(JSON.stringify({type:'subscribe'}));again(Math.max(10,(m.expires_in||300)-60)*1000)};mine.onclose=()=>{if(!session&&ws===mine)status.textContent='Sesión rechazada o vencida.'}}window.addEventListener('message',e=>{if(e.source!==window.parent||e.origin!==parent||!e.data||e.data.type!=='watcher:session'||typeof e.data.assertion!=='string')return;session=null;begin(e.data.assertion)});window.parent.postMessage({type:'watcher:ready'},parent)})();"""
+_JS = """(()=>{
+const parent=document.body.dataset.parentOrigin,status=document.getElementById('status'),root=document.getElementById('monitors');
+const canVideo=typeof VideoDecoder==='function'&&typeof EncodedVideoChunk==='function';
+let ws,session,renew,jpeg=false;
+function again(ms){clearTimeout(renew);renew=setTimeout(()=>window.parent.postMessage({type:'watcher:ready'},parent),ms)}
+function begin(assertion){
+if(ws)ws.close();clearTimeout(renew);
+const mine=ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/events'),tiles=new Map(),decs=new Map();
+mine.binaryType='arraybuffer';
+const draw=(c,src,w,h)=>{if(c.width!==w||c.height!==h){c.width=w;c.height=h}c.getContext('2d').drawImage(src,0,0)};
+const fallback=()=>{if(mine!==ws||jpeg)return;jpeg=true;status.textContent='Video no disponible; usando imágenes.';again(0)};
+function video(i,codec){
+const c=tiles.get(i),old=decs.get(i);if(old&&old.d.state!=='closed')old.d.close();decs.delete(i);
+if(!c||codec==='mjpeg')return;
+const d=new VideoDecoder({output:f=>{draw(c,f,f.displayWidth,f.displayHeight);f.close()},error:fallback});
+try{d.configure({codec,optimizeForLatency:true,avc:{format:'annexb'}})}catch(_){fallback();return}
+decs.set(i,{d,n:0,synced:false})}
+mine.onopen=()=>mine.send(JSON.stringify({type:'auth',assertion}));
+mine.onmessage=async e=>{
+if(typeof e.data!=='string'){
+const b=new Uint8Array(e.data),k=b[0],i=b[1],c=tiles.get(i);if(!c||mine!==ws)return;
+if(k===0){const n=c._n=(c._n||0)+1;createImageBitmap(new Blob([b.subarray(2)],{type:'image/jpeg'})).then(x=>{if(n>=(c._drawn||0)){c._drawn=n;draw(c,x,x.width,x.height)}x.close()},()=>{});return}
+const s=decs.get(i);if(!s||s.d.state!=='configured')return;
+if(k===1)s.synced=true;
+if(s.d.decodeQueueSize>12&&k!==1)s.synced=false;
+if(!s.synced)return;
+try{s.d.decode(new EncodedVideoChunk({type:k===1?'key':'delta',timestamp:(s.n++)*41667,data:b.subarray(2)}))}catch(_){fallback()}
+return}
+const m=JSON.parse(e.data);
+if(m.type==='video_config'){video(m.monitor,m.codec);return}
+if(m.type==='error'){status.textContent=m.reason==='viewer limit reached'?'Límite de visores alcanzado.':'Error de supervisión.';return}
+if(m.type!=='authenticated')return;
+session=m.session;
+const r=await fetch('/api/v1/monitors',{headers:{Authorization:'Bearer '+session},cache:'no-store'});
+if(!r.ok){status.textContent='No se pudieron abrir los monitores.';again(5000);return}
+const d=await r.json();status.textContent='';
+root.replaceChildren(...d.monitors.map(x=>{const a=document.createElement('article'),l=document.createElement('strong'),c=document.createElement('canvas');a.className='tile';l.textContent=x.name;c.setAttribute('role','img');c.setAttribute('aria-label',x.name);tiles.set(x.index,c);a.append(l,c);return a}));
+if(mine===ws)mine.send(JSON.stringify(jpeg||!canVideo?{type:'subscribe'}:{type:'subscribe',codec:'h264'}));
+again(Math.max(10,(m.expires_in||300)-60)*1000)};
+mine.onclose=()=>{if(!session&&ws===mine)status.textContent='Sesión rechazada o vencida.'}}
+window.addEventListener('message',e=>{if(e.source!==window.parent||e.origin!==parent||!e.data||e.data.type!=='watcher:session'||typeof e.data.assertion!=='string')return;session=null;begin(e.data.assertion)});
+window.parent.postMessage({type:'watcher:ready'},parent)})();"""

@@ -269,6 +269,12 @@ class Settings:
     live_view_heartbeat_url: str = os.getenv("LIVE_VIEW_HEARTBEAT_URL", "")
     live_view_heartbeat_seconds: int = int(os.getenv("LIVE_VIEW_HEARTBEAT_SECONDS", "30"))
     live_view_max_viewers: int = int(os.getenv("LIVE_VIEW_MAX_VIEWERS", "3"))
+    # "h264": on-demand hardware-encoded video over the WebSocket (MJPEG stays the
+    # automatic fallback); "mjpeg": force the legacy JPEG-from-recorder transport.
+    live_view_transport: str = os.getenv("LIVE_VIEW_TRANSPORT", "h264").lower()
+    live_view_video_fps: int = int(os.getenv("LIVE_VIEW_VIDEO_FPS", "24"))
+    live_view_video_width: int = int(os.getenv("LIVE_VIEW_VIDEO_WIDTH", "1280"))
+    live_view_video_kbps: int = int(os.getenv("LIVE_VIEW_VIDEO_KBPS", "3000"))
 
     # ── OneDrive delivery (folder + share link) ───────────────────────────────
     # ONEDRIVE_ROOT — local root the LocalShareAdapter operates on.  Defaults to
