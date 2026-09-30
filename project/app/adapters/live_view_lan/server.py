@@ -24,6 +24,26 @@ from app.core.ports.live_view_port import LiveViewPort
 
 _MAX_WS_MESSAGE = 16 * 1024
 _BOUNDARY = b"watcher-live-frame"
+# Poll the preview file's stat (cheap) and only read/send a JPEG when it changed.
+_FRAME_POLL_SECONDS = 0.1
+# Resend an unchanged frame this often so a static screen still proves liveness.
+_KEEPALIVE_SECONDS = 5.0
+
+
+class _FrameGate:
+    """Decides when the preview JPEG must be (re)sent to one viewer."""
+
+    def __init__(self, keepalive_seconds: float) -> None:
+        self._keepalive = keepalive_seconds
+        self._sent_signature: tuple[int, int] | None = None
+        self._sent_at = 0.0
+
+    def should_send(self, signature: tuple[int, int], now: float) -> bool:
+        return signature != self._sent_signature or now - self._sent_at >= self._keepalive
+
+    def mark_sent(self, signature: tuple[int, int], now: float) -> None:
+        self._sent_signature = signature
+        self._sent_at = now
 
 
 class LiveViewLanAdapter(LiveViewPort):
@@ -218,6 +238,9 @@ class LiveViewLanAdapter(LiveViewPort):
         return web.json_response({"monitors": monitors})
 
     async def _stream(self, request: web.Request) -> web.StreamResponse:
+        # The capability only authorises *opening* the stream (30 s TTL). Once
+        # open, its life is bounded by the session (renewed by the embed page);
+        # re-checking the capability per frame killed every stream after 30 s.
         capability = self._sessions.require_capability(request.match_info["capability"], "preview")
         with self._viewer_lock:
             is_new_viewer = capability.session_token not in self._viewer_streams
@@ -226,18 +249,24 @@ class LiveViewLanAdapter(LiveViewPort):
             self._viewer_streams[capability.session_token] = self._viewer_streams.get(capability.session_token, 0) + 1
         response = web.StreamResponse(headers={"Content-Type": "multipart/x-mixed-replace; boundary=watcher-live-frame", "Cache-Control": "no-store"})
         await response.prepare(request)
+        gate = _FrameGate(_KEEPALIVE_SECONDS)
         try:
             while True:
-                self._sessions.require_capability(request.match_info["capability"], "preview")
+                self._sessions.require_session(capability.session_token)
                 try:
-                    frame = capability.target.read_bytes()
+                    stat = capability.target.stat()
+                    signature = (stat.st_mtime_ns, stat.st_size)
+                    if gate.should_send(signature, time.monotonic()):
+                        frame = capability.target.read_bytes()
+                        if frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
+                            await response.write(b"--" + _BOUNDARY + b"\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
+                            gate.mark_sent(signature, time.monotonic())
                 except OSError:
-                    await asyncio.sleep(0.1)
-                    continue
-                if frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9"):
-                    await response.write(b"--" + _BOUNDARY + b"\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
-                await asyncio.sleep(0.1)
-        except (ConnectionResetError, asyncio.CancelledError, AuthenticationError):
+                    pass  # ffmpeg is mid-rewrite; retry on the next poll
+                await asyncio.sleep(_FRAME_POLL_SECONDS)
+        except AuthenticationError as exc:
+            logger.info("[live-view] stream closed: {}", exc)
+        except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
             with self._viewer_lock:
@@ -265,11 +294,13 @@ class LiveViewLanAdapter(LiveViewPort):
                     await ws.send_json({"type": "pong"})
                 elif message.type == WSMsgType.TEXT:
                     await ws.close(code=1008, message=b"read-only websocket")
-        except (AuthenticationError, asyncio.TimeoutError):
+        except (AuthenticationError, asyncio.TimeoutError) as exc:
+            # Reason only — never the assertion itself.
+            logger.warning("[live-view] session rejected: {}", exc or type(exc).__name__)
             await ws.close(code=1008, message=b"authentication rejected")
         return ws
 
 
 _HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><link rel=\"stylesheet\" href=\"/embed.css\"></head><body data-parent-origin=\"__PARENT__\"><p id=\"status\" role=\"status\"></p><div id=\"monitors\"></div><script src=\"/embed.js\"></script></body></html>"""
 _CSS = "body{margin:0;background:#101827;color:#e5e7eb;font:14px system-ui;padding:10px}.tile{margin:0}.tile img{width:100%;display:block;background:#000}.tile strong{display:block;padding:6px}"
-_JS = """(()=>{const parent= document.body.dataset.parentOrigin,status=document.getElementById('status'),root=document.getElementById('monitors');let ws,session;function begin(assertion){if(ws)ws.close();ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/events');ws.onopen=()=>ws.send(JSON.stringify({type:'auth',assertion}));ws.onmessage=async e=>{const m=JSON.parse(e.data);if(m.type!=='authenticated')return;session=m.session;const r=await fetch('/api/v1/monitors',{headers:{Authorization:'Bearer '+session},cache:'no-store'});if(!r.ok){status.textContent='No se pudieron abrir los monitores.';return}const d=await r.json();root.replaceChildren(...d.monitors.map(x=>{const a=document.createElement('article'),l=document.createElement('strong'),i=document.createElement('img');a.className='tile';l.textContent=x.name;i.alt=x.name;i.src=x.stream_url;a.append(l,i);return a}));};ws.onclose=()=>{if(!session)status.textContent='Sesión rechazada o vencida.'};}window.addEventListener('message',e=>{if(e.source!==window.parent||e.origin!==parent||!e.data||e.data.type!=='watcher:session'||typeof e.data.assertion!=='string')return;session=null;begin(e.data.assertion)});window.parent.postMessage({type:'watcher:ready'},parent)})();"""
+_JS = """(()=>{const parent= document.body.dataset.parentOrigin,status=document.getElementById('status'),root=document.getElementById('monitors');let ws,session,renew;function again(ms){clearTimeout(renew);renew=setTimeout(()=>window.parent.postMessage({type:'watcher:ready'},parent),ms)}function begin(assertion){if(ws)ws.close();clearTimeout(renew);const mine=ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/events');mine.onopen=()=>mine.send(JSON.stringify({type:'auth',assertion}));mine.onmessage=async e=>{const m=JSON.parse(e.data);if(m.type!=='authenticated')return;session=m.session;const r=await fetch('/api/v1/monitors',{headers:{Authorization:'Bearer '+session},cache:'no-store'});if(!r.ok){status.textContent='No se pudieron abrir los monitores.';again(5000);return}const d=await r.json();status.textContent='';root.replaceChildren(...d.monitors.map(x=>{const a=document.createElement('article'),l=document.createElement('strong'),i=document.createElement('img');a.className='tile';l.textContent=x.name;i.alt=x.name;i.onerror=()=>again(2000);i.src=x.stream_url;a.append(l,i);return a}));again(Math.max(10,(m.expires_in||300)-60)*1000)};mine.onclose=()=>{if(!session&&ws===mine)status.textContent='Sesión rechazada o vencida.'}}window.addEventListener('message',e=>{if(e.source!==window.parent||e.origin!==parent||!e.data||e.data.type!=='watcher:session'||typeof e.data.assertion!=='string')return;session=null;begin(e.data.assertion)});window.parent.postMessage({type:'watcher:ready'},parent)})();"""
