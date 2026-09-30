@@ -434,6 +434,31 @@ history; each item below carries file:line so it can be picked up standalone.
   retry/backoff philosophy elsewhere in the codebase.
 - **Depends on:** none.
 
+### 27. Bundled `ffmpeg.exe` is a Chocolatey shim — every FFmpeg call dies with rc=-1
+- **What:** On the Windows test PC (2026-09-29) every FFmpeg child (4 capture
+  recorders + the hourly clip builder) exits at launch with `rc=4294967295` (-1).
+  Running the bundled `_internal\bin\ffmpeg.exe` by hand prints
+  `Cannot find file at '..\\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe'` — it is the
+  Chocolatey shim, not the real binary. CI (`build-daemon.yml`) does
+  `choco install ffmpeg`, and `project/installer/The Watcher.spec` bundles
+  `shutil.which("ffmpeg")`, which resolves to that shim. (Not a codec problem: the
+  command already uses `libx264`.) `RecorderSupervisor` then burns its 10 restart
+  attempts and gives up; `RecordingService` has no workers ("no registered
+  workers" every 30 s), `MonitorDetectionService` says "no change" so they are never
+  re-registered, and live view has no `preview.jpg` to serve.
+- **Why:** Recording and live view are silently dead on any PC updated from that
+  artifact, and nothing in the UI or logs names the cause (ffmpeg stderr is not logged).
+- **Fix direction:** (1) build: resolve the real binary (e.g.
+  `C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe`, or a
+  pinned Gyan/BtbN download) and fail the spec if the file is a shim (tiny size or
+  `-version` fails); (2) startup self-test: run `ffmpeg -version` plus a 1 s lavfi
+  encode, and surface a health error if it fails; (3) auto-detect codec support at
+  the same time (hevc -> h264 -> software) and persist the first working one, so
+  an unusable encoder never needs a manual `set_codec`; (4) log ffmpeg stderr on
+  early exit; when the supervisor gives up publish a health event and let
+  detection re-register workers.
+- **Depends on:** none.
+
 ## Completed
 
 ### Track R2 — recorder supervision: ctypes orphan-fix, M1 clip-engine quick win, M5 hardening

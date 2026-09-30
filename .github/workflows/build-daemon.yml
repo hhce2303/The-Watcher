@@ -6,8 +6,11 @@ name: Build daemon (Windows)
 on:
   workflow_dispatch:
   push:
-    branches: [spike/editor-export-rust-encoder]
-    paths: [.github/workflows/build-daemon.yml, project/installer/Update-Watcher.ps1]
+    branches: [spike/editor-export-rust-encoder, stream-display-stations]
+    paths:
+      - .github/workflows/build-daemon.yml
+      - project/installer/Update-Watcher.ps1
+      - project/installer/The Watcher.spec
 
 jobs:
   build:

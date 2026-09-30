@@ -15,20 +15,39 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Resolve FFmpeg binary to bundle
 # ---------------------------------------------------------------------------
-_ffmpeg_exe = shutil.which("ffmpeg")
+# A package-manager shim (Chocolatey's bin\ffmpeg.exe is ~50 KB and just forwards
+# to ..\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe) is NOT bundleable: it dies with
+# rc=-1 once the forwarded target is missing.  A real ffmpeg.exe is 50+ MB.
+_MIN_REAL_FFMPEG_BYTES = 5 * 1024 * 1024
 
-if not _ffmpeg_exe:
+
+def _is_real_ffmpeg(path) -> bool:
+    try:
+        return Path(path).is_file() and Path(path).stat().st_size >= _MIN_REAL_FFMPEG_BYTES
+    except OSError:
+        return False
+
+
+def _ffmpeg_candidates():
+    on_path = shutil.which("ffmpeg")
+    if on_path:
+        yield on_path
+    # Chocolatey: the real binary lives under lib/, PATH only has the shim.
+    _choco = os.environ.get("ChocolateyInstall", r"C:\ProgramData\chocolatey")
+    yield str(Path(_choco) / "lib" / "ffmpeg" / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe")
     # winget (Gyan.FFmpeg) — search without PATH
     _winget_base = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages"
     if _winget_base.exists():
-        for _f in _winget_base.glob("Gyan.FFmpeg*/**/ffmpeg.exe"):
-            _ffmpeg_exe = str(_f)
-            break
+        yield from (str(_f) for _f in _winget_base.glob("Gyan.FFmpeg*/**/ffmpeg.exe"))
+
+
+_ffmpeg_exe = next((c for c in _ffmpeg_candidates() if _is_real_ffmpeg(c)), None)
 
 if not _ffmpeg_exe:
     raise SystemExit(
-        "ERROR: ffmpeg.exe not found — install FFmpeg before building:\n"
-        "  winget install --id Gyan.FFmpeg"
+        "ERROR: a real ffmpeg.exe (>= 5 MB, not a package-manager shim) was not found —\n"
+        "  install FFmpeg before building:  winget install --id Gyan.FFmpeg\n"
+        "  (Chocolatey: the real binary is under <choco>\\lib\\ffmpeg\\tools\\ffmpeg\\bin)"
     )
 
 print(f"[spec] Bundling FFmpeg: {_ffmpeg_exe}")
