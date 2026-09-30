@@ -7,7 +7,7 @@
     "The Watcher.exe"). It stops the running daemon, replaces the program files
     in the install dir and PRESERVES the machine-specific configuration:
       - .env
-      - certs\   (Operator TLS leaf key/cert, issuer public key, test root CA)
+      - certs\   (TLS leaf key/cert, issuer public key, trust\*.pem CAs)
     First install: pass -CertsFrom <dir> (a folder with the provisioned certs\
     and/or operator-deployment.env) to seed them once. Existing certs/.env are
     never overwritten unless -Force is given together with -CertsFrom.
@@ -81,24 +81,27 @@ if (Test-Path $CertsDest) {
     Write-Warning "No certs\ in $InstallDir. Re-run with -CertsFrom <provisioning dir>."
 }
 
-# Trust the provisioning test CA for the current user (idempotent). Needs an
-# interactive desktop session: Windows shows a confirmation dialog. Over SSH it
-# fails with "request not supported" - run this script locally, or use
+# Trust the CA certificates shipped by the TLS provisioning service in
+# certs\trust\*.pem for the current user (idempotent). Needs an interactive
+# desktop session: Windows shows a confirmation dialog. Over SSH it fails with
+# "request not supported" - run this script locally, or use
 # `certutil -addstore Root <ca.pem>` from an elevated prompt (machine-wide).
-$CaPem = Join-Path $CertsDest "watcher-test-rootCA.pem"
-if (Test-Path $CaPem) {
-    try {
-        $ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $CaPem
-        $trusted = @(Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root | Where-Object Thumbprint -eq $ca.Thumbprint)
-        if ($trusted.Count -gt 0) {
-            Write-Host "Test CA already trusted." -ForegroundColor Green
-        } else {
-            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store "Root", "CurrentUser"
-            $store.Open("ReadWrite"); $store.Add($ca); $store.Close()
-            Write-Host "Test CA trusted for current user." -ForegroundColor Green
+$TrustDir = Join-Path $CertsDest "trust"
+if (Test-Path $TrustDir) {
+    foreach ($CaPem in (Get-ChildItem $TrustDir -File -Filter *.pem).FullName) {
+        try {
+            $ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $CaPem
+            $trusted = @(Get-ChildItem Cert:\CurrentUser\Root, Cert:\LocalMachine\Root | Where-Object Thumbprint -eq $ca.Thumbprint)
+            if ($trusted.Count -gt 0) {
+                Write-Host "CA $(Split-Path $CaPem -Leaf) already trusted." -ForegroundColor Green
+            } else {
+                $store = New-Object System.Security.Cryptography.X509Certificates.X509Store "Root", "CurrentUser"
+                $store.Open("ReadWrite"); $store.Add($ca); $store.Close()
+                Write-Host "CA $(Split-Path $CaPem -Leaf) trusted for current user." -ForegroundColor Green
+            }
+        } catch {
+            Write-Warning "Could not trust CA ($($_.Exception.Message)). Run locally, or elevated: certutil -addstore Root `"$CaPem`""
         }
-    } catch {
-        Write-Warning "Could not trust test CA ($($_.Exception.Message)). Run locally, or elevated: certutil -addstore Root `"$CaPem`""
     }
 }
 

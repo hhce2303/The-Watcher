@@ -208,14 +208,26 @@ begin
     MsgBox('The Watcher was installed for this user, but the LAN firewall rule was not added. Ask IT to allow TCP 8767 on the Private profile before using live supervision.', mbInformation, MB_OK);
 end;
 
-procedure TrustOperatorPreviewCertificate();
+procedure TrustProvisionedCertificates();
 var
   ResultCode: Integer;
+  FindRec: TFindRec;
+  TrustDir: String;
 begin
-  // Public test root only; makes the loopback Daily preview valid for the
-  // interactive Operator account.  It never imports the CA private key.
-  Exec(ExpandConstant('{sys}\certutil.exe'), '-user -addstore Root "{app}\certs\watcher-test-rootCA.pem"', '', SW_HIDE,
-    ewWaitUntilTerminated, ResultCode);
+  // Public CA certificates shipped by the TLS provisioning service in
+  // certs\trust\*.pem.  Never imports a private key.
+  TrustDir := ExpandConstant('{app}\certs\trust\');
+  if FindFirst(TrustDir + '*.pem', FindRec) then
+  begin
+    try
+      repeat
+        Exec(ExpandConstant('{sys}\certutil.exe'), '-user -addstore Root "' + TrustDir + FindRec.Name + '"', '', SW_HIDE,
+          ewWaitUntilTerminated, ResultCode);
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -225,7 +237,7 @@ begin
   else if CurStep = ssPostInstall then
   begin
     WriteOperatorProfile();
-    TrustOperatorPreviewCertificate();
+    TrustProvisionedCertificates();
     ConfigureLiveViewFirewall();
   end;
 end;

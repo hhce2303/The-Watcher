@@ -233,7 +233,16 @@ if ($OperatorDeploymentConfig -ne "") {
     if ($ProfileText -match "REPLACE_WITH|OPERATOR-PC-DNS") {
         throw "Operator deployment profile still contains placeholders. Refusing to build an unusable installer."
     }
-    foreach ($RelativeAsset in @("certs\\live-view.pem", "certs\\live-view-key.pem", "certs\\daily-issuer-public.pem", "certs\\watcher-test-rootCA.pem")) {
+    # TLS material is opaque to this repo: it is whatever the profile points at
+    # with <NAME>_FILE=certs\... plus any CA certificates the provisioning
+    # service ships in certs\trust\*.pem. See docs/architecture/tls-provisioning-contract.md.
+    $ReferencedAssets = @([regex]::Matches($ProfileText, '(?m)^\s*[A-Z0-9_]+_FILE\s*=\s*(certs\\+[^\r\n#]+?)\s*$') |
+        ForEach-Object { $_.Groups[1].Value -replace '\\+', '\' })
+    $TrustDir = Join-Path $ProfileDir "certs\trust"
+    $TrustAssets = if (Test-Path -LiteralPath $TrustDir) {
+        @(Get-ChildItem -LiteralPath $TrustDir -File -Filter *.pem | ForEach-Object { "certs\trust\$($_.Name)" })
+    } else { @() }
+    foreach ($RelativeAsset in @($ReferencedAssets + $TrustAssets | Select-Object -Unique)) {
         $SourceAsset = Join-Path $ProfileDir $RelativeAsset
         if (-not (Test-Path -LiteralPath $SourceAsset -PathType Leaf)) {
             throw "Required Operator deployment asset is missing: $SourceAsset"
