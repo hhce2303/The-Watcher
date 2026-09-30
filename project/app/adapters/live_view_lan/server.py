@@ -69,8 +69,8 @@ class LiveViewLanAdapter(LiveViewPort):
         self._ready = threading.Event()
         self._start_error: Exception | None = None
         self._running = False
-        # A viewer is an authenticated supervisor session, not one monitor
-        # stream. One supervisor may legitimately open every monitor.
+        # A viewer is an authenticated supervisor (assertion subject), not one
+        # session or monitor stream. One supervisor may open every monitor.
         self._viewer_streams: dict[str, int] = {}
         self._viewer_lock = threading.Lock()
         self._heartbeat_task: asyncio.Task[None] | None = None
@@ -242,11 +242,15 @@ class LiveViewLanAdapter(LiveViewPort):
         # open, its life is bounded by the session (renewed by the embed page);
         # re-checking the capability per frame killed every stream after 30 s.
         capability = self._sessions.require_capability(request.match_info["capability"], "preview")
+        # A viewer is a supervisor identity. Reloads, extra tabs and session
+        # renewals each open a new session for the same supervisor and must
+        # share one slot, otherwise stale sessions exhaust the limit.
+        viewer = self._sessions.require_session(capability.session_token).subject
         with self._viewer_lock:
-            is_new_viewer = capability.session_token not in self._viewer_streams
+            is_new_viewer = viewer not in self._viewer_streams
             if is_new_viewer and len(self._viewer_streams) >= self._settings.live_view_max_viewers:
                 raise web.HTTPTooManyRequests(text="viewer limit reached")
-            self._viewer_streams[capability.session_token] = self._viewer_streams.get(capability.session_token, 0) + 1
+            self._viewer_streams[viewer] = self._viewer_streams.get(viewer, 0) + 1
         response = web.StreamResponse(headers={"Content-Type": "multipart/x-mixed-replace; boundary=watcher-live-frame", "Cache-Control": "no-store"})
         await response.prepare(request)
         gate = _FrameGate(_KEEPALIVE_SECONDS)
@@ -270,11 +274,11 @@ class LiveViewLanAdapter(LiveViewPort):
             pass
         finally:
             with self._viewer_lock:
-                remaining = self._viewer_streams.get(capability.session_token, 1) - 1
+                remaining = self._viewer_streams.get(viewer, 1) - 1
                 if remaining > 0:
-                    self._viewer_streams[capability.session_token] = remaining
+                    self._viewer_streams[viewer] = remaining
                 else:
-                    self._viewer_streams.pop(capability.session_token, None)
+                    self._viewer_streams.pop(viewer, None)
         return response
 
     async def _events(self, request: web.Request) -> web.WebSocketResponse:
