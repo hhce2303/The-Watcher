@@ -15,7 +15,7 @@ Scenario: Supervisor consulta la flota
 Scenario: Supervisor abre una pantalla autorizada
   Given un Operator online y un Supervisor autorizado
   When el Supervisor selecciona uno de sus monitores
-  Then recibe una vista MJPEG LAN de solo lectura a 8–10 fps
+  Then recibe una vista LAN de solo lectura a 24 fps (H.264 sobre WebSocket, MJPEG como respaldo)
   And no recibe rutas de clips ni controles remotos
 
 Scenario: Límite de observadores

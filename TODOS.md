@@ -434,29 +434,59 @@ history; each item below carries file:line so it can be picked up standalone.
   retry/backoff philosophy elsewhere in the codebase.
 - **Depends on:** none.
 
-### 27. Bundled `ffmpeg.exe` is a Chocolatey shim — every FFmpeg call dies with rc=-1
-- **What:** On the Windows test PC (2026-09-29) every FFmpeg child (4 capture
-  recorders + the hourly clip builder) exits at launch with `rc=4294967295` (-1).
-  Running the bundled `_internal\bin\ffmpeg.exe` by hand prints
-  `Cannot find file at '..\\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe'` — it is the
-  Chocolatey shim, not the real binary. CI (`build-daemon.yml`) does
-  `choco install ffmpeg`, and `project/installer/The Watcher.spec` bundles
-  `shutil.which("ffmpeg")`, which resolves to that shim. (Not a codec problem: the
-  command already uses `libx264`.) `RecorderSupervisor` then burns its 10 restart
-  attempts and gives up; `RecordingService` has no workers ("no registered
-  workers" every 30 s), `MonitorDetectionService` says "no change" so they are never
-  re-registered, and live view has no `preview.jpg` to serve.
-- **Why:** Recording and live view are silently dead on any PC updated from that
-  artifact, and nothing in the UI or logs names the cause (ffmpeg stderr is not logged).
-- **Fix direction:** (1) build: resolve the real binary (e.g.
-  `C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe`, or a
-  pinned Gyan/BtbN download) and fail the spec if the file is a shim (tiny size or
-  `-version` fails); (2) startup self-test: run `ffmpeg -version` plus a 1 s lavfi
-  encode, and surface a health error if it fails; (3) auto-detect codec support at
-  the same time (hevc -> h264 -> software) and persist the first working one, so
-  an unusable encoder never needs a manual `set_codec`; (4) log ffmpeg stderr on
-  early exit; when the supervisor gives up publish a health event and let
-  detection re-register workers.
+### 27. FFmpeg startup self-test and automatic codec detection
+- **What:** *Packaging is fixed* (commit `e0d1b2a`): the spec now bundles the real
+  `ffmpeg.exe` and fails the build on a Chocolatey shim. Until then (found
+  2026-09-29) every FFmpeg child on the test PC exited at launch with rc=-1,
+  `RecorderSupervisor` exhausted its 10 restarts and left `RecordingService` with no
+  workers ("no registered workers" every 30 s) while `MonitorDetectionService`
+  reported "no change", and live view had no `preview.jpg`.
+- **Why:** A bad or missing encoder still kills recording and live view silently,
+  and nobody is told. ffmpeg stderr is not logged for the recorder.
+- **Fix direction:** (1) startup self-test: `ffmpeg -version` plus a 1 s lavfi
+  encode, surfacing a health error on failure; (2) auto-detect codec support
+  (hevc -> h264 -> software) and persist the first working one; (3) log ffmpeg
+  stderr on early exit; (4) when the supervisor gives up, publish a health event
+  and let detection re-register workers.
+- **Depends on:** none.
+
+### 28. Live view: `ddagrab` fails as a second capture; hardware H.264 never used
+- **What:** On the test PC (4 x 1920x1080, AMD) the live-view feed tries
+  `ddagrab/h264_amf`, `ddagrab/libx264`, then `gdigrab/libx264`. The first two fail
+  at launch with `Could not open encoder ... Invalid argument (-22)` (the filter
+  graph delivers no frame), so every monitor runs `gdigrab` + software x264.
+  24.0 fps is sustained, but the CPU cost is unmeasured and the GPU encoder
+  (`h264_amf`, 0.50 Mbit/s vs 1.61 for x264 in the manual benchmark) is unused.
+  `h264_feed.py` keeps only the last 20 stderr lines, which hides the real cause.
+- **Why:** NFR-Perf-7 (<=5% CPU/monitor) cannot be judged while every monitor burns
+  CPU on GDI capture + x264, and fleet PCs are smaller than the 24-core test PC.
+- **Fix direction:** log the first and last stderr lines on a failed candidate; run
+  `ddagrab` by hand in an interactive session to isolate the failure (is a second
+  duplication of an output refused while the recorder holds one? a filter option?);
+  consider taking frames from the recorder instead of a second capture; then
+  measure CPU per monitor on a fleet-class PC.
+- **Depends on:** none.
+
+### 29. Watchdog did not relaunch the daemon after it died
+- **What:** On 2026-09-30 the Operator daemon was found not running (no process,
+  pipe or ports; log ended at 23:59:03) while `\TheWatcher-OperatorWatchdog`
+  was `Ready`, not running it. Cause not established; an earlier
+  `schtasks /end` from the diagnostics session may be responsible.
+- **Why:** The Operator topology (ADR-0010) relies on the watchdog to keep the
+  daemon always-on.
+- **Fix direction:** reproduce with and without the manual `/end`; verify the
+  task's restart-on-failure and trigger settings; log watchdog launches.
+- **Depends on:** none.
+
+### 30. CI does not run the test suite and skips builds on most changes
+- **What:** `build-daemon.yml` only builds; it never runs `pytest`. Its push trigger
+  is path-filtered to the workflow, `Update-Watcher.ps1` and the spec, so a change
+  under `project/app/` does not build (it needed `workflow_dispatch`).
+  `test_real_x264_output_...` skips when `ffmpeg` is absent.
+- **Why:** The live-view fixes (capability TTL, viewer slots, WebSocket transport)
+  were only guarded by tests run by hand.
+- **Fix direction:** add a pytest job (Windows, `ffmpeg` installed) and widen the
+  build paths to `project/app/**`.
 - **Depends on:** none.
 
 ## Completed
