@@ -294,3 +294,180 @@ def test_slot_is_released_promptly_when_the_client_disconnects(tmp_path, monkeyp
             await client.close()
 
     assert _run(scenario()) == {}, "slot leaked although the client went away"
+
+
+# ── Single-connection transport: every monitor over the /events WebSocket ──────
+# Browsers cap HTTP/1.1 at 6 connections per host; one infinite <img> stream per
+# monitor let 6 streams starve every other tab's iframe ("pending", no error).
+
+from aiohttp import WSMsgType  # noqa: E402
+
+_ORIGIN = "https://op.lan:8767"
+
+
+class _WsSessions:
+    def __init__(self) -> None:
+        self.valid = True
+        self._subjects: dict[str, str] = {}
+        self._n = 0
+
+    def open_session(self, assertion):
+        if assertion.startswith("bad"):
+            raise AuthenticationError("assertion replay")
+        self._n += 1
+        token = f"tok{self._n}"
+        self._subjects[token] = assertion
+        return SimpleNamespace(token=token, subject=assertion)
+
+    def require_session(self, token):
+        if not self.valid or token not in self._subjects:
+            raise AuthenticationError("session expired")
+        return SimpleNamespace(token=token, subject=self._subjects[token])
+
+
+def _ws_adapter(tmp_path: Path, monitors=(0, 1)) -> tuple[LiveViewLanAdapter, _WsSessions]:
+    adapter = object.__new__(LiveViewLanAdapter)
+    sessions = _WsSessions()
+    adapter._sessions = sessions
+    adapter._settings = SimpleNamespace(live_view_origin=_ORIGIN, live_view_max_viewers=3, segment_dir=tmp_path)
+    adapter._api = SimpleNamespace(recording=SimpleNamespace(
+        get_monitors=lambda: [SimpleNamespace(index=i, name=f"D{i}") for i in monitors]))
+    adapter._viewer_streams = {}
+    adapter._viewer_lock = threading.Lock()
+    for i in monitors:
+        (tmp_path / f"m{i}").mkdir(exist_ok=True)
+        (tmp_path / f"m{i}" / "preview.jpg").write_bytes(b"\xff\xd8" + bytes([i]) * 40 + b"\xff\xd9")
+    return adapter, sessions
+
+
+async def _ws_client(adapter) -> TestClient:
+    app = web.Application()
+    app.add_routes([web.get("/events", adapter._events)])
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    return client
+
+
+async def _subscribed(client, subject: str):
+    ws = await client.ws_connect("/events", headers={"Origin": _ORIGIN})
+    await ws.send_json({"type": "auth", "assertion": subject})
+    assert (await ws.receive_json(timeout=2))["type"] == "authenticated"
+    await ws.send_str('{"type":"subscribe"}')
+    return ws
+
+
+async def _binary_frames(ws, seconds: float) -> dict[int, int]:
+    """index -> number of binary frames received within ``seconds``."""
+    seen: dict[int, int] = {}
+    deadline = asyncio.get_running_loop().time() + seconds
+    while (left := deadline - asyncio.get_running_loop().time()) > 0:
+        try:
+            msg = await ws.receive(timeout=left)
+        except asyncio.TimeoutError:
+            break
+        if msg.type == WSMsgType.BINARY:
+            assert msg.data[1:3] == b"\xff\xd8" and msg.data.endswith(b"\xff\xd9")
+            seen[msg.data[0]] = seen.get(msg.data[0], 0) + 1
+    return seen
+
+
+def test_ws_pushes_every_monitor_once_over_one_connection(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live_server, "_KEEPALIVE_SECONDS", 60.0)
+    adapter, _ = _ws_adapter(tmp_path, monitors=(0, 1, 2, 3))
+
+    async def scenario():
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1")
+            return await _binary_frames(ws, 0.5)
+        finally:
+            await client.close()
+
+    assert _run(scenario()) == {0: 1, 1: 1, 2: 1, 3: 1}, "one frame per monitor, none repeated while static"
+
+
+def test_ws_resends_only_the_monitor_that_changed(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live_server, "_KEEPALIVE_SECONDS", 60.0)
+    adapter, _ = _ws_adapter(tmp_path)
+
+    async def scenario():
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1")
+            await _binary_frames(ws, 0.2)
+            (tmp_path / "m1" / "preview.jpg").write_bytes(b"\xff\xd8" + b"\x01" * 90 + b"\xff\xd9")
+            return await _binary_frames(ws, 0.3)
+        finally:
+            await client.close()
+
+    assert _run(scenario()) == {1: 1}
+
+
+def test_ws_limits_distinct_supervisors_but_not_their_reconnects(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    adapter, _ = _ws_adapter(tmp_path)
+
+    async def scenario():
+        client = await _ws_client(adapter)
+        try:
+            socks = [await _subscribed(client, s) for s in ("u1", "u2", "u3", "u1")]  # u1 twice: one slot
+            for w in socks:
+                assert await _binary_frames(w, 0.15), "every admitted socket must receive frames"
+            fourth = await _subscribed(client, "u4")
+            msg = await fourth.receive_json(timeout=2)
+            closed = await fourth.receive(timeout=2)
+            return msg, closed.type
+        finally:
+            await client.close()
+
+    msg, closed_type = _run(scenario())
+    assert msg == {"type": "error", "reason": "viewer limit reached"}
+    assert closed_type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED)
+
+
+def test_ws_closes_and_frees_the_slot_when_the_session_expires(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    adapter, sessions = _ws_adapter(tmp_path)
+
+    async def scenario():
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1")
+            await _binary_frames(ws, 0.1)
+            sessions.valid = False
+            while True:
+                msg = await ws.receive(timeout=2)
+                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
+                    break
+            await asyncio.sleep(0.1)
+            return dict(adapter._viewer_streams)
+        finally:
+            await client.close()
+
+    assert _run(scenario()) == {}
+
+
+def test_ws_slot_is_freed_when_the_client_disconnects(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    adapter, _ = _ws_adapter(tmp_path)
+
+    async def scenario():
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1")
+            await _binary_frames(ws, 0.1)
+            await ws.close()
+            await asyncio.sleep(0.3)
+            return dict(adapter._viewer_streams)
+        finally:
+            await client.close()
+
+    assert _run(scenario()) == {}
+
+
+def test_embed_js_uses_one_websocket_not_one_stream_per_monitor():
+    js = live_server._JS
+    assert "subscribe" in js and "arraybuffer" in js and "createImageBitmap" in js
+    assert "stream_url" not in js, "per-monitor <img> streams are what exhausted the 6-connection cap"
