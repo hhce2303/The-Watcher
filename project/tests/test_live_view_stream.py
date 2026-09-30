@@ -27,19 +27,21 @@ class _FakeSessions:
 
     def __init__(self, target: Path) -> None:
         self.target = target
-        self.cap_issued = True
         self.cap_valid = True
         self.session_valid = True
+        # capability token -> supervisor identity (default: one supervisor per capability)
+        self.subjects: dict[str, str] = {}
 
-    def require_capability(self, _token, _kind):
+    def require_capability(self, token, _kind):
         if not self.cap_valid:
             raise AuthenticationError("media capability expired")
-        return SimpleNamespace(session_token="s1", target=self.target)
+        return SimpleNamespace(session_token=f"session-{token}", target=self.target)
 
-    def require_session(self, _token):
+    def require_session(self, session_token):
         if not self.session_valid:
             raise AuthenticationError("session expired")
-        return SimpleNamespace(token="s1")
+        cap = session_token.removeprefix("session-")
+        return SimpleNamespace(token=session_token, subject=self.subjects.get(cap, f"user-{cap}"))
 
 
 def _adapter(target: Path) -> tuple[LiveViewLanAdapter, _FakeSessions]:
@@ -226,3 +228,69 @@ def test_embed_js_renews_session_and_reports_superseded_sockets():
     assert "watcher:ready" in js.split("window.addEventListener")[0], "iframe must re-request an assertion before the session ends"
     assert "setTimeout" in js
     assert "ws!==mine" in js.replace(" ", "") or "mine" in js, "a superseded socket must not show 'rejected'"
+
+
+def test_one_supervisor_with_many_sessions_counts_as_one_viewer(tmp_path, monkeypatch):
+    """Reloads/renewals create new sessions for the same supervisor; they share one slot."""
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    target = tmp_path / "preview.jpg"
+    target.write_bytes(_JPEG)
+    adapter, sessions = _adapter(target)
+    sessions.subjects.update({"a2": "user-a", "a3": "user-a", "a4": "user-a", "a5": "user-a", "a": "user-a"})
+
+    async def scenario() -> list[int]:
+        client = await _client(adapter)
+        try:
+            statuses, resps = [], []
+            for cap in ("a", "a2", "a3", "a4", "a5"):  # 5 sessions, 1 supervisor
+                resp = await client.get(f"/stream/{cap}")
+                statuses.append(resp.status)
+                resps.append(resp)
+            return statuses
+        finally:
+            await client.close()
+
+    assert _run(scenario()) == [200] * 5
+
+
+def test_fourth_distinct_supervisor_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    target = tmp_path / "preview.jpg"
+    target.write_bytes(_JPEG)
+    adapter, _ = _adapter(target)
+
+    async def scenario() -> list[int]:
+        client = await _client(adapter)
+        try:
+            statuses, resps = [], []
+            for cap in ("u1", "u2", "u3", "u4"):
+                resp = await client.get(f"/stream/{cap}")
+                statuses.append(resp.status)
+                resps.append(resp)
+            return statuses
+        finally:
+            await client.close()
+
+    assert _run(scenario()) == [200, 200, 200, 429]
+
+
+def test_slot_is_released_promptly_when_the_client_disconnects(tmp_path, monkeypatch):
+    """A static preview writes nothing; a dropped client must still free its slot."""
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live_server, "_KEEPALIVE_SECONDS", 60.0)
+    target = tmp_path / "preview.jpg"
+    target.write_bytes(_JPEG)
+    adapter, _ = _adapter(target)
+
+    async def scenario() -> dict:
+        client = await _client(adapter)
+        try:
+            resp = await client.get("/stream/cap")
+            await _read_frames(resp, 0.1)
+            resp.close()  # browser navigated away / tab closed
+            await asyncio.sleep(0.4)
+            return dict(adapter._viewer_streams)
+        finally:
+            await client.close()
+
+    assert _run(scenario()) == {}, "slot leaked although the client went away"
