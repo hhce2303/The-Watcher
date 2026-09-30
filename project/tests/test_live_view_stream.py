@@ -334,6 +334,7 @@ def _ws_adapter(tmp_path: Path, monitors=(0, 1)) -> tuple[LiveViewLanAdapter, _W
         get_monitors=lambda: [SimpleNamespace(index=i, name=f"D{i}") for i in monitors]))
     adapter._viewer_streams = {}
     adapter._viewer_lock = threading.Lock()
+    adapter._hub = None
     for i in monitors:
         (tmp_path / f"m{i}").mkdir(exist_ok=True)
         (tmp_path / f"m{i}" / "preview.jpg").write_bytes(b"\xff\xd8" + bytes([i]) * 40 + b"\xff\xd9")
@@ -348,11 +349,11 @@ async def _ws_client(adapter) -> TestClient:
     return client
 
 
-async def _subscribed(client, subject: str):
+async def _subscribed(client, subject: str, codec: str | None = None):
     ws = await client.ws_connect("/events", headers={"Origin": _ORIGIN})
     await ws.send_json({"type": "auth", "assertion": subject})
     assert (await ws.receive_json(timeout=2))["type"] == "authenticated"
-    await ws.send_str('{"type":"subscribe"}')
+    await ws.send_json({"type": "subscribe", **({"codec": codec} if codec else {})})
     return ws
 
 
@@ -366,8 +367,9 @@ async def _binary_frames(ws, seconds: float) -> dict[int, int]:
         except asyncio.TimeoutError:
             break
         if msg.type == WSMsgType.BINARY:
-            assert msg.data[1:3] == b"\xff\xd8" and msg.data.endswith(b"\xff\xd9")
-            seen[msg.data[0]] = seen.get(msg.data[0], 0) + 1
+            assert msg.data[0] == 0, "JPEG frames carry kind 0"
+            assert msg.data[2:4] == b"\xff\xd8" and msg.data.endswith(b"\xff\xd9")
+            seen[msg.data[1]] = seen.get(msg.data[1], 0) + 1
     return seen
 
 
@@ -470,4 +472,139 @@ def test_ws_slot_is_freed_when_the_client_disconnects(tmp_path, monkeypatch):
 def test_embed_js_uses_one_websocket_not_one_stream_per_monitor():
     js = live_server._JS
     assert "subscribe" in js and "arraybuffer" in js and "createImageBitmap" in js
+    assert "VideoDecoder" in js and "EncodedVideoChunk" in js and "codec:'h264'" in js.replace(" ", "")
+    assert "mjpeg" in js, "the page must be able to fall back to JPEG frames"
     assert "stream_url" not in js, "per-monitor <img> streams are what exhausted the 6-connection cap"
+
+
+# ── H.264 over the same WebSocket ───────────────────────────────────────────────
+
+import json  # noqa: E402
+import time  # noqa: E402
+
+from app.adapters.live_view_lan.h264_feed import H264Hub  # noqa: E402
+from tests.test_live_view_h264 import AUD, CANDIDATES, CFG, PPS, SPS, _Spawner, idr, pframe  # noqa: E402
+
+
+async def _collect(ws, count: int, timeout: float = 3.0) -> list:
+    """First ``count`` messages as ("json", dict) or ("bin", kind, index, payload)."""
+    out = []
+    deadline = asyncio.get_running_loop().time() + timeout
+    while len(out) < count:
+        msg = await ws.receive(timeout=max(0.01, deadline - asyncio.get_running_loop().time()))
+        if msg.type == WSMsgType.TEXT:
+            out.append(("json", json.loads(msg.data)))
+        elif msg.type == WSMsgType.BINARY:
+            out.append(("bin", msg.data[0], msg.data[1], msg.data[2:]))
+        else:
+            break
+    return out
+
+
+def test_ws_h264_sends_config_then_key_then_delta_and_no_jpeg(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    adapter, _ = _ws_adapter(tmp_path, monitors=(0,))
+    spawner = _Spawner(lambda p: (time.sleep(0.05), p.push(SPS, PPS, idr(), pframe(), AUD)))
+
+    async def scenario():
+        adapter._hub = H264Hub(asyncio.get_running_loop(), CFG, CANDIDATES, spawn=spawner, grace=0.05)
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1", codec="h264")
+            got = await _collect(ws, 3)
+            await _binary_frames(ws, 0.2)  # nothing JPEG may follow
+            return got
+        finally:
+            await client.close()
+
+    cfg, key, delta = asyncio.run(scenario())
+    assert cfg == ("json", {"type": "video_config", "monitor": 0, "codec": "avc1.4d401f"})
+    assert key[:3] == ("bin", live_server.KIND_KEY, 0) and key[3].startswith(b"\x00\x00\x00\x01" + SPS)
+    assert delta[:3] == ("bin", live_server.KIND_DELTA, 0)
+
+
+def test_ws_falls_back_to_jpeg_when_no_encoder_works(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live_server, "_KEEPALIVE_SECONDS", 60.0)
+    adapter, _ = _ws_adapter(tmp_path, monitors=(0, 1))
+    spawner = _Spawner(*[lambda p: p.finish()] * 6)
+
+    async def scenario():
+        adapter._hub = H264Hub(asyncio.get_running_loop(), CFG, CANDIDATES, spawn=spawner, grace=0.05)
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1", codec="h264")
+            jsons, frames = [], {}
+            deadline = asyncio.get_running_loop().time() + 3
+            while (len(jsons) < 2 or len(frames) < 2) and asyncio.get_running_loop().time() < deadline:
+                msg = await ws.receive(timeout=3)
+                if msg.type == WSMsgType.TEXT:
+                    jsons.append(json.loads(msg.data))
+                elif msg.type == WSMsgType.BINARY:
+                    frames[msg.data[1]] = msg.data[0]
+            return jsons, frames
+        finally:
+            await client.close()
+
+    jsons, frames = asyncio.run(scenario())
+    assert sorted(j["monitor"] for j in jsons if j["codec"] == "mjpeg") == [0, 1]
+    assert frames == {0: live_server.KIND_JPEG, 1: live_server.KIND_JPEG}
+
+
+def test_ws_without_codec_keeps_serving_jpeg_even_when_a_hub_exists(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live_server, "_KEEPALIVE_SECONDS", 60.0)
+    adapter, _ = _ws_adapter(tmp_path)
+    spawner = _Spawner()
+
+    async def scenario():
+        adapter._hub = H264Hub(asyncio.get_running_loop(), CFG, CANDIDATES, spawn=spawner, grace=0.05)
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1")  # older page / no WebCodecs
+            return await _binary_frames(ws, 0.3), len(spawner.calls)
+        finally:
+            await client.close()
+
+    frames, spawned = asyncio.run(scenario())
+    assert frames == {0: 1, 1: 1} and spawned == 0, "no encoder may start for a JPEG viewer"
+
+
+def test_ws_h264_releases_the_encode_after_the_viewer_leaves(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    adapter, _ = _ws_adapter(tmp_path, monitors=(0,))
+    spawner = _Spawner(lambda p: p.push(SPS, PPS, idr(), AUD))
+
+    async def scenario():
+        hub = adapter._hub = H264Hub(asyncio.get_running_loop(), CFG, CANDIDATES, spawn=spawner, grace=0.1)
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1", codec="h264")
+            await _collect(ws, 2)
+            assert 0 in hub.feeds
+            await ws.close()
+            await asyncio.sleep(0.5)
+            return dict(hub.feeds), spawner.calls[0][1].terminated
+        finally:
+            await client.close()
+
+    feeds, terminated = asyncio.run(scenario())
+    assert feeds == {} and terminated, "nobody watching → the encoder must stop"
+
+
+def test_a_slow_viewer_drops_its_backlog_and_waits_for_the_next_key_frame():
+    adapter = object.__new__(LiveViewLanAdapter)
+    captured = []
+    adapter._hub = SimpleNamespace(subscribe=lambda spec, sub: captured.append(sub))
+    adapter._api = SimpleNamespace(recording=SimpleNamespace(get_monitors=lambda: [SimpleNamespace(index=0, name="D0")]))
+
+    async def scenario():
+        out: asyncio.Queue = asyncio.Queue(maxsize=2)
+        subs = adapter._h264_subscribers(out, set())
+        sub = subs[0][1]
+        sub.on_au(0, True, b"k")
+        sub.on_au(0, False, b"d1")
+        sub.on_au(0, False, b"d2")  # queue full → backlog dropped
+        return out.empty(), sub.need_key
+
+    assert asyncio.run(scenario()) == (True, True)
