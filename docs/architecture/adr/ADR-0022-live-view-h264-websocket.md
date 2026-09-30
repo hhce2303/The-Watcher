@@ -47,10 +47,35 @@ Pruebas en el PC Operator de 4 monitores (2026-09-30) mostraron tres límites:
 
 ## Consecuencias
 
-- Un segundo proceso de captura por monitor mientras hay visores; su CPU no está
-  medido en hardware de flota. `LIVE_VIEW_VIDEO_FPS/WIDTH/KBPS` permiten bajarlo.
-- `ddagrab` solo entrega frames cuando la pantalla cambia; la fluidez real
-  depende de que los duplique para sostener el ritmo (registrado en el log
-  `[live-h264] … fps kbit/s`).
-- Validado con FFmpeg real y Chrome/Chromium headless (24.1 fps por monitor
-  dibujados). Falta validar en el PC Operator con AMF y en WebView2.
+- Un segundo proceso de captura por monitor mientras hay visores. Su CPU **no
+  está medido en hardware de flota**. `LIVE_VIEW_VIDEO_FPS/WIDTH/KBPS` permiten
+  bajarlo.
+- `ddagrab` solo entrega frames cuando la pantalla cambia; el preview del
+  recorder apenas se escribía con la pantalla quieta (0 escrituras en 5 s).
+- Cada ruta de codificación registra `[live-h264] mN backend/encoder: X fps Y
+  kbit/s viewers=N` cada 30 s; es la fuente de verdad de lo que entrega.
+
+## Evidencia (PC Operator de prueba, 4 × 1920×1080, 2026-09-30)
+
+| Prueba | Resultado |
+|---|---|
+| MJPEG 24 fps, q:v 2 / q:v 6 (benchmark, por monitor) | 29.2 / 18.0 Mbit/s |
+| H.264 24 fps, 3 Mbit/s objetivo (benchmark, por monitor) | x264 1.61, `h264_amf` 0.50, `h264_mf` 0.73 Mbit/s |
+| Ruta real en el daemon | **`gdigrab` + `libx264`, 24.0 fps por monitor**, 95–2333 kbit/s según contenido |
+| Visor en Chrome/Chromium headless, servidor y JS reales + x264 real | 24.1 fps dibujados por monitor |
+| MJPEG previo (pantalla casi quieta, 3 supervisores × 4 monitores) | 1–3 Mbit/s en total, pero a ≤10 fps y solo con cambios |
+
+**La ruta con GPU no funciona todavía.** En el PC de prueba `ddagrab` + `h264_amf`
+y `ddagrab` + `libx264` fallan al arrancar con `Could not open encoder … Invalid
+argument (-22)` (el filtro no entrega ningún frame), por lo que el daemon cae
+al último candidato, `gdigrab` + `libx264`, que sí sostiene 24 fps. El motivo
+del fallo de `ddagrab` no se aisló (el log solo conserva las últimas líneas de
+stderr); ver `TODOS.md` #28. La codificación por hardware (`h264_amf`) quedó sin
+validar en el daemon; el benchmark manual sí la mostró viable (24 fps, 0.50
+Mbit/s).
+
+## Pendiente
+
+- CPU del encode de vista en vivo en hardware de flota (NFR-Perf-7 sigue abierto).
+- Validar en WebView2 y en Brave; se probó en Chrome/Chromium.
+- `TODOS.md` #28: diagnosticar `ddagrab` como segunda captura y habilitar AMF.

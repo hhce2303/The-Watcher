@@ -1,6 +1,6 @@
 # ADR-0021 — Supervisión LAN autenticada para vistas en vivo
 
-- **Estado**: Aceptado
+- **Estado**: Aceptado — el transporte (punto 2) y la tasa de 8–10 fps fueron enmendados por [ADR-0022](ADR-0022-live-view-h264-websocket.md); auth, límites y seguridad siguen vigentes
 - **Fecha**: 2026-09-13
 - **Requisitos**: NFR-Seg-4, NFR-Seg-5
 
