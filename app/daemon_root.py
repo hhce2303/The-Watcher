@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -272,14 +273,16 @@ class Daemon:
             return
         try:
             rs = self.backend.recording_service
-            if start_recording and rs is not None:
+            if start_recording and rs is not None and not self._stopping.is_set():
                 rs.start()
             else:
                 logger.info("Recording not started at launch (start_recording=False).")
+            if self._stopping.is_set():
+                return
             if self.backend.disk_monitor is not None:
                 self.backend.disk_monitor.start()
             self.detection.start()
-            if start_recording:
+            if start_recording and not self._stopping.is_set():
                 self._recover_startup_clips()
         except Exception:
             logger.exception("[startup] recording stack failed to start.")
@@ -308,21 +311,29 @@ class Daemon:
         self._stopping.set()
         if self._startup is not None and self._startup is not threading.current_thread():
             self._startup.join(timeout=15)
+            if self._startup.is_alive():
+                logger.warning("[stop] recording start-up still running after 15 s; stopping anyway.")
         b = self.backend
-        if b.health_service is not None:
-            b.health_service.stop()
-        self.detection.stop()
-        if b.disk_monitor is not None:
-            b.disk_monitor.stop()
-        if b.recording_service is not None:
-            b.recording_service.stop()
-        for pb in b.per_monitor_builders.values():
-            pb.shutdown()
+        steps: list[tuple[str, Optional[Callable[[], None]]]] = [
+            ("health", b.health_service.stop if b.health_service is not None else None),
+            ("detection", self.detection.stop),
+            ("disk monitor", b.disk_monitor.stop if b.disk_monitor is not None else None),
+            # Always reached even if an earlier step raised: it kills the ffmpeg children.
+            ("recording", b.recording_service.stop if b.recording_service is not None else None),
+        ]
+        steps += [(f"builder m{i}", pb.shutdown) for i, pb in b.per_monitor_builders.items()]
         if b.combined_builder is not None:
-            b.combined_builder.shutdown()
-        get_telemetry().stop()
+            steps.append(("combined builder", b.combined_builder.shutdown))
+        steps.append(("telemetry", get_telemetry().stop))
         if self.live_view is not None:
-            self.live_view.stop()
+            steps.append(("live view", self.live_view.stop))
+        for name, fn in steps:
+            if fn is None:
+                continue
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - one failing step must not skip the rest
+                logger.exception("[stop] {} failed", name)
 
     def status(self) -> dict:
         state = self.api.recording.get_recording_state()
@@ -443,10 +454,18 @@ def run_daemon(
     install_signals: bool = True,
     poll_seconds: float = 2.0,
     register_launcher: bool = True,
+    lock_wait_seconds: float = 25.0,
 ) -> int:
     state_dir = settings.segment_dir.parent
     lock = instance.InstanceLock(state_dir)
-    if not lock.acquire():
+    # A relaunch (watchdog, stop+start, update) can race the previous instance's
+    # graceful shutdown (up to ~20 s); wait for it like the monorepo mutex did.
+    deadline = time.monotonic() + lock_wait_seconds
+    acquired = lock.acquire()
+    while not acquired and time.monotonic() < deadline:
+        time.sleep(0.25)
+        acquired = lock.acquire()
+    if not acquired:
         # Benign collision: exit 0 so the restart watchdog does not read it as a crash.
         logger.info("Another daemon instance is already running - exiting quietly.")
         return EXIT_OK
@@ -476,9 +495,16 @@ def run_daemon(
             state_dir, on_stop=daemon.stop, on_tick=_tick,
             install_signals=install_signals, poll_seconds=poll_seconds,
         )
-        daemon.start(start_recording=start_recording)
-        logger.info("Daemon {} up (recording={}).", __version__, start_recording)
-        return runtime.serve()
+        # Handlers first: a SIGINT/SIGTERM during live-view start-up (up to 8 s)
+        # must request a stop, not kill the process past the teardown.
+        runtime.install_signal_handlers()
+        try:
+            daemon.start(start_recording=start_recording)
+            logger.info("Daemon {} up (recording={}).", __version__, start_recording)
+            return runtime.serve()
+        except BaseException:
+            daemon.stop()
+            raise
     finally:
         lock.release()
 

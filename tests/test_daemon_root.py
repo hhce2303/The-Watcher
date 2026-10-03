@@ -156,7 +156,7 @@ def test_run_daemon_exits_zero_when_another_instance_holds_the_lock(settings) ->
     assert held.acquire()
     try:
         assert daemon_root.run_daemon(settings, monitor_port=FakeMonitorPort(), install_signals=False,
-                                      register_launcher=False) == 0
+                                      register_launcher=False, lock_wait_seconds=0.3) == 0
     finally:
         held.release()
 
@@ -209,3 +209,33 @@ def test_cli_rejects_unknown_commands(settings) -> None:
 def test_legacy_daemon_flag_is_an_alias_of_start() -> None:
     assert daemon_root.parse_args(["--daemon"]).command == "start"
     assert daemon_root.parse_args([]).command == "start"
+
+
+def test_stop_runs_every_step_even_if_one_fails(settings) -> None:
+    d = _build(settings)
+    d.start(start_recording=False, background=False)
+    stopped = []
+    d.backend.health_service.stop = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    d.backend.recording_service.stop = lambda: stopped.append("recording")
+    d.stop()
+    assert stopped == ["recording"]
+
+
+def test_second_instance_waits_for_the_first_to_release(settings) -> None:
+    state = settings.segment_dir.parent
+    state.mkdir(parents=True, exist_ok=True)
+    held = instance.InstanceLock(state)
+    assert held.acquire()
+    threading.Timer(0.3, held.release).start()
+    code = {}
+    t = threading.Thread(target=lambda: code.setdefault("c", daemon_root.run_daemon(
+        settings, monitor_port=FakeMonitorPort(), start_recording=False, install_signals=False,
+        poll_seconds=0.05, register_launcher=False, lock_wait_seconds=5)), daemon=True)
+    t.start()
+    deadline = time.time() + 5
+    while time.time() < deadline and instance.read_status(state) is None:
+        time.sleep(0.02)
+    assert instance.read_status(state) is not None  # it did take over, not exit
+    instance.request_stop(state)
+    t.join(5)
+    assert code["c"] == 0

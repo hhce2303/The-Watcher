@@ -82,3 +82,11 @@ def test_relaunch_argv_forwards_mode_args(monkeypatch):
     from app.infrastructure.relaunch import _relaunch_argv
     from app.infrastructure.launch_target import launch_argv
     assert _relaunch_argv(["--sidecar"]) == launch_argv(["--sidecar"])
+
+
+def test_frozen_console_twin_never_becomes_the_launcher(monkeypatch):
+    from pathlib import Path
+    from app.infrastructure.launch_target import launch_argv
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(Path("C:/x/watcherctl.exe")))
+    assert Path(launch_argv(["--daemon"])[0]).name == "The Watcher.exe"

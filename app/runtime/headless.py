@@ -49,8 +49,7 @@ class HeadlessRuntime:
         return self._stop.is_set()
 
     def serve(self) -> int:
-        if self._install_signals:
-            self._install_signal_handlers()
+        self.install_signal_handlers()
         logger.info("[runtime] daemon serving (headless).")
         while not self._stop.is_set():
             if instance.stop_requested(self._state_dir):
@@ -78,7 +77,10 @@ class HeadlessRuntime:
             except Exception:  # noqa: BLE001
                 logger.exception("[runtime] on_stop failed")
 
-    def _install_signal_handlers(self) -> None:
+    def install_signal_handlers(self) -> None:
+        if not self._install_signals:
+            return
+
         def _handler(_signum, _frame) -> None:
             self._stop.set()
 

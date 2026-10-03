@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -44,7 +45,14 @@ def _is_forbidden(module: str) -> bool:
 def _imports_in(path: Path) -> list[tuple[int, str]]:
     found: list[tuple[int, str]] = []
     tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+    package = ".".join(path.relative_to(REPO).with_suffix("").parts[:-1])
     for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level > 0:
+            base = package.split(".")[: len(package.split(".")) - (node.level - 1)]
+            mod = ".".join(base + ([node.module] if node.module else []))
+            found.append((node.lineno, mod))
+            found += [(node.lineno, f"{mod}.{a.name}") for a in node.names]
+            continue
         if isinstance(node, ast.Import):
             found += [(node.lineno, a.name) for a in node.names]
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
@@ -72,9 +80,21 @@ def test_no_forbidden_import_statement_anywhere_in_app() -> None:
 
 def test_static_scan_actually_sees_lazy_imports() -> None:
     # Guard the guard: the scanner must find function-level imports.
-    server = APP / "adapters" / "live_view_lan" / "server.py"
-    modules = {m for _, m in _imports_in(server)}
-    assert "app.adapters.ffmpeg.process_guard" in modules or "app.adapters.ffmpeg.encoder_selector" in modules
+    feed = APP / "adapters" / "live_view_lan" / "h264_feed.py"  # both imports are function-level
+    modules = {m for _, m in _imports_in(feed)}
+    assert "app.adapters.ffmpeg.process_guard" in modules
+    assert "app.adapters.ffmpeg.encoder_selector" in modules
+    # relative imports are resolved against the package, not skipped
+    assert any(m.startswith("app.") for m in {m for _, m in _imports_in(APP / "daemon_root.py")})
+
+
+def test_relative_imports_are_resolved(tmp_path) -> None:
+    f = APP / "_probe_tmp.py"
+    f.write_text("from .core.api import dto\n", encoding="utf-8")
+    try:
+        assert any(_is_forbidden(m) for _, m in _imports_in(f))
+    finally:
+        f.unlink()
 
 
 _BOOT_SCRIPT = textwrap.dedent(
@@ -123,7 +143,9 @@ _BOOT_SCRIPT = textwrap.dedent(
 
 
 def test_headless_startup_imports_nothing_forbidden(tmp_path) -> None:
-    env = {"PATH": "/usr/bin:/bin", "LOG_LEVEL": "WARNING", "WATCHER_LOG_DIR": str(tmp_path / "logs"), "HOME": str(tmp_path)}
+    # Keep the real environment: on Windows Python needs SYSTEMROOT etc. to start.
+    env = {**os.environ, "LOG_LEVEL": "WARNING", "WATCHER_LOG_DIR": str(tmp_path / "logs"),
+           "HOME": str(tmp_path), "USERPROFILE": str(tmp_path), "LOCALAPPDATA": str(tmp_path)}
     proc = subprocess.run(
         [sys.executable, "-c", _BOOT_SCRIPT.format(repo=str(REPO), root=str(tmp_path))],
         capture_output=True, text=True, timeout=90, env=env, cwd=tmp_path,

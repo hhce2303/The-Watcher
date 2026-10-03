@@ -25,3 +25,21 @@ copied code keeps these defects. Original item numbers are in brackets.
 
 Not carried (their code is out of scope, ADR-0003): #22 `LivePreviewService` watchdog, #23 MJPEG stream catch-all,
 #26 `BatchClipAnalyzer` retry, #8 truncated-preview negative test for the MJPEG preview server.
+
+## Findings of the extraction review (new code, not yet fixed)
+
+An independent read-only review of the extraction found these; the blocking ones (CI env for the purity test, lock
+wait, stop robustness, signal handlers before start, `watcherctl` as launcher, relative-import scan) were fixed.
+Remaining:
+
+| ID | Issue | Where |
+|----|-------|-------|
+| B-17 | `daemon-status.json` write (`os.replace`) and read can race on Windows (no FILE_SHARE_DELETE): spurious tick errors / `health` "not running". Retry both sides. | `app/runtime/instance.py` |
+| B-18 | `status`/`health` trust `psutil.pid_exists`; a recycled pid with an old status file reads as alive. Record process start time or delete the file on exit. | `app/runtime/instance.py`, `daemon_root._cmd_*` |
+| B-19 | `health` is "unhealthy: not recording" during the first 10-30 s (ffmpeg probes). Add a `starting` state. | `daemon_root` |
+| B-20 | Installer/Update hard-kill `The Watcher.exe` (`taskkill /F`, `Stop-Process -Force`), do not try `watcherctl stop` first and do not match `watcherctl.exe`. | `installer/` |
+| B-21 | Inno `[Files]` copies the staged `.env`/`certs\` over an existing install (Update-Watcher.ps1 preserves them, the Inno path does not). Firewall rule is added on every install without an existence check (and port, see B-16). | `installer/The Watcher.iss` |
+| B-22 | Purity test is a deny-list: an unlisted monorepo module would pass; non-literal `import_module` is not seen; dynamic boot uses `start_recording=False`. Replace by an allow-list of the 65-file closure. | `tests/test_import_purity.py` |
+| B-23 | `build.ps1` hardcodes a pip list that can drift from `requirements.txt`; stale "dist" comments; `upx=True` in the spec. | `installer/` |
+| B-24 | CI: `cache-dependency-path` hashes only `requirements-dev.txt`; no smoke test of the built exe; no `permissions:`/`concurrency:`; Python 3.13 is untested locally (3.14.7 used). | `.github/workflows/` |
+| B-25 | Dropped monorepo behaviors: `migrate_legacy_event_clips`, hang-timeout `os._exit` hook, `on_recording_failed` wiring; the single-instance lock is now a machine-wide file lock (monorepo: per-session named mutex), so a running monorepo build does not exclude this daemon. State files land in `SEGMENT_DIR`'s parent (a drive root if `SEGMENT_DIR` is `D:\segments`). | `daemon_root`, `instance` |

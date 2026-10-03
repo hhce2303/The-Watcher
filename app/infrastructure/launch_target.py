@@ -19,12 +19,21 @@ instead of relaunching into the UI it used to.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Optional, Sequence
 
 
 def launch_argv(extra_args: Optional[Sequence[str]] = None) -> list[str]:
     """Argument vector that starts a fresh instance (for ``subprocess``)."""
-    base = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "app.daemon_root"]
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable)
+        # The console CLI twin (watcherctl.exe) must never become the launcher:
+        # it would open a console window on the operator's screen at every logon.
+        if exe.stem.lower() == "watcherctl":
+            exe = exe.with_name("The Watcher.exe")
+        base = [str(exe)]
+    else:
+        base = [sys.executable, "-m", "app.daemon_root"]
     return base + list(extra_args or [])
 
 
