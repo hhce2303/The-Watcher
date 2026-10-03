@@ -8,7 +8,7 @@ is the data source for the ADR-0007 gate: whether captured CPU stays above the
 SLA on a relevant slice of the fleet after the zero-copy pipeline (ADR-0014),
 which would justify escalating the Rust capture port instead of tuning FFmpeg
 further. It is also the data source for the Track R2 M0 bench harness
-(``project/tools/bench_recording.ps1``) via the ``TELEMETRY_CSV`` env var.
+(``tools/bench_recording.ps1`` in the monorepo; not carried over) via the ``TELEMETRY_CSV`` env var.
 
 Usage::
 

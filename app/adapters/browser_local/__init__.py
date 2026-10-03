@@ -1,10 +1,7 @@
-"""Browser-only loopback adapter for the Daily SIG Systems iframe.
+"""Session/identity helpers shared with the LAN live view (``auth``, ``identity``).
 
-This package is intentionally independent from ``adapters.ipc``.  The latter
-is the user-scoped Windows named-pipe contract used by the Tauri shell; this
-one is a narrow HTTPS/WSS read-only surface for a normal browser iframe.
+Deliberately empty: the monorepo's ``__init__`` re-exported ``BrowserLocalAdapter``
+from ``server.py``, which imports ``core.api`` (editor/player/role).  The
+browser-local HTTP server is out of scope (ADR-0023) and is not shipped here;
+importing this package must stay free of it (enforced by tests/test_import_purity.py).
 """
-
-from app.adapters.browser_local.server import BrowserLocalAdapter
-
-__all__ = ["BrowserLocalAdapter"]

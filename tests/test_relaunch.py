@@ -9,7 +9,7 @@ def test_relaunch_argv_source(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     from app.infrastructure.relaunch import _relaunch_argv
     argv = _relaunch_argv()
-    assert argv == [sys.executable, "-m", "app.main"]
+    assert argv == [sys.executable, "-m", "app.daemon_root"]
 
 
 def test_relaunch_argv_frozen(monkeypatch):

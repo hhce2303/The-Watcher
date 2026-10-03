@@ -137,46 +137,9 @@ class Settings:
     disk_warn_bytes: int = int(os.getenv("DISK_WARN_BYTES", str(2 * 1024 ** 3)))
     disk_stop_bytes: int = int(os.getenv("DISK_STOP_BYTES", str(512 * 1024 ** 2)))
 
-    # Event detection and event-highlight clips are opt-in while continuous
-    # recording is stabilised. With this false, inference/event FFmpeg work
-    # cannot compete with the four-monitor recording pipeline.
-    events_enabled: bool = _env_flag("EVENTS_ENABLED", False)
-
-    # Event / clip timing (all in seconds)
-    # How long after pressing the button to wait before assembling the clip
-    # (captures post-event footage).  Override via EVENT_POST_SECONDS.
+    # Event-clip window used by ClipBuilder (seconds before/after the trigger).
     event_post_seconds: int = int(os.getenv("EVENT_POST_SECONDS", "120"))
-    # How many seconds of pre-event footage to include in the clip.
     event_pre_seconds: int = int(os.getenv("EVENT_PRE_SECONDS", "120"))
-    # Minimum time between two accepted events (prevents double-clicks).
-    event_cooldown_seconds: int = int(os.getenv("EVENT_COOLDOWN_SECONDS", "30"))
-    # Delay between retry attempts when a clip build fails.
-    clip_retry_delay_seconds: int = int(os.getenv("CLIP_RETRY_DELAY_SECONDS", "30"))
-    # Minimum seconds between two auto-detection clip BUILDS (distinct from
-    # EVENT_COOLDOWN_SECONDS, which only gates how often a detection becomes an
-    # AnalyticEvent for analytics/timeline purposes). Continuous detections
-    # (e.g. a person lingering) fire a new AnalyticEvent every cooldown period,
-    # but each one used to schedule its own full multi-monitor clip re-encode —
-    # with a 4-minute window (pre+post) and a 30s cooldown that meant up to 8
-    # heavily-overlapping clips got built for the same activity. Defaults to
-    # the full clip window (pre+post) so builds tile back-to-back with no
-    # overlap and no gaps instead of stacking redundant encodes.
-    event_auto_build_min_interval_seconds: int = int(
-        os.getenv(
-            "EVENT_AUTO_BUILD_MIN_INTERVAL_SECONDS",
-            str(event_pre_seconds + event_post_seconds),
-        )
-    )
-    # How long the live-inference/auto-event background thread may stay dead
-    # (per RecordingHealthService's is_alive() check) before the Operator
-    # daemon deliberately exits (non-zero code) so the Scheduled Task watchdog
-    # revives a clean process. Raw capture/retention is unaffected by that
-    # thread dying, so this is the only way to recover without a human
-    # noticing and killing the process by hand. Only wired for the operator
-    # daemon (main.py) — never for the IT/Supervisor sidecar.
-    event_pipeline_hang_grace_seconds: int = int(
-        os.getenv("EVENT_PIPELINE_HANG_GRACE_SECONDS", "300")
-    )
 
     # ── Continuous-recording clip window ─────────────────────────────────────
     # CLIP_WINDOW_MINUTES — close the current rolling clip and start a new one
@@ -190,34 +153,10 @@ class Settings:
     #   Default: 3072 MB (3 GB).  Set to a small value (e.g. 50) for testing.
     clip_max_size_mb: int = int(os.getenv("CLIP_MAX_SIZE_MB", "3072"))
 
-    # ── Network share credentials (NAS / UNC paths) ───────────────────────────
-    # Used by the ClipBrowser to authenticate \\server\ paths with net use.
-    # Store here — never commit a .env with real passwords.
-    nas_username: str = os.getenv("NAS_USERNAME", "")
-    nas_password: str = os.getenv("NAS_PASSWORD", "")
-
-    # ── Role system ───────────────────────────────────────────────────────────
-    # IT_PIN — required to unlock role-change UI on Operator/Supervisor PCs.
-    # Set to a strong PIN per deployment; default "1234" is for first-time setup.
-    it_pin: str = os.getenv("IT_PIN", "1234")
-
-    # ── Supervisor / IT request system ───────────────────────────────────────
-    # SLC-Storage UNC host where operator footage is stored.
-    slc_storage_host: str = os.getenv("SLC_STORAGE_HOST", r"\\SIG-SLC-Storage")
-    # WebSocket port the IT PC listens on for incoming clip requests.
-    it_ws_port: int = int(os.getenv("IT_WS_PORT", "9090"))
-
-    # ── Operator preview HTTP server ──────────────────────────────────────────
-    # Local MJPEG server started only on Operator machines so that any browser
-    # on the same PC can open a live screen preview without Tauri.
-    # Bind host is always 127.0.0.1 (localhost-only); never reachable over LAN.
-    preview_http_host: str = os.getenv("PREVIEW_HTTP_HOST", "127.0.0.1")
-    preview_http_port: int = int(os.getenv("PREVIEW_HTTP_PORT", "8787"))
-
-    # â”€â”€ Daily SIG Systems browser-local channel (disabled until enrolled) â”€â”€
-    # This is deliberately separate from the Tauri named-pipe IPC and the
-    # operator MJPEG helper above. It always binds loopback in the adapter; no
-    # setting may widen it to a LAN interface.
+    # -- Daily SIG Systems browser-local identity/session settings --
+    # Only the session/identity helpers of browser_local are shipped in this repo
+    # (live_view_lan reuses them). The browser-local HTTP server is out of scope
+    # (ADR-0023); these fields keep the helper modules' settings contract intact.
     browser_local_enabled: bool = _env_flag("BROWSER_LOCAL_ENABLED", False)
     # Deliberately not configurable: Daily's CSP and postMessage contract pin
     # this origin. A different port would create a second, unreviewed trust
@@ -279,62 +218,7 @@ class Settings:
     live_view_video_width: int = int(os.getenv("LIVE_VIEW_VIDEO_WIDTH", "1280"))
     live_view_video_kbps: int = int(os.getenv("LIVE_VIEW_VIDEO_KBPS", "3000"))
 
-    # ── OneDrive delivery (folder + share link) ───────────────────────────────
-    # ONEDRIVE_ROOT — local root the LocalShareAdapter operates on.  Defaults to
-    #   the conventional OneDrive sync folder so the desktop client uploads the
-    #   created folder to the cloud.  Override per-deployment if OneDrive lives
-    #   elsewhere.  Unlike SEGMENT_DIR/CLIPS_DIR (kept OUT of OneDrive on purpose
-    #   to avoid sync locks on hot files), delivery folders are cold and *should*
-    #   live inside OneDrive.
-    onedrive_root: Path = _resolve_dir(
-        "ONEDRIVE_ROOT",
-        os.path.join(os.environ.get("USERPROFILE", r"C:\Users\Default"), "OneDrive"),
-    )
-    # ONEDRIVE_BASE_FOLDER — logical base path under the root where per-operator
-    #   delivery folders are created (e.g. "SLC/clips-supervisor/<operator>/<YYYY-MM>").
-    onedrive_base_folder: str = os.getenv("ONEDRIVE_BASE_FOLDER", "SLC/clips-supervisor")
-
-    # Deferred Microsoft Graph adapter (OneDriveGraphAdapter) — populate these
-    # once IT registers an Azure AD app; empty by default so the local adapter
-    # stays in use until then.
-    onedrive_client_id: str = os.getenv("ONEDRIVE_CLIENT_ID", "")
-    onedrive_tenant_id: str = os.getenv("ONEDRIVE_TENANT_ID", "")
-
-    # ── Fase 3 — ONNX batch inference ────────────────────────────────────────
-    # ONNX_MODEL_PATH — absolute path to a YOLOv8/v5 ONNX model file.
-    #   Empty string (default) = no model → MockDetectorAdapter stays active.
-    #   Set to a valid .onnx path to enable real inference on closed clips.
-    onnx_model_path: str = os.getenv("ONNX_MODEL_PATH", "")
-
-    # INFERENCE_DEVICE — execution provider for ONNX Runtime.
-    #   "cpu"       → CPUExecutionProvider (always available, no GPU needed)
-    #   "directml"  → DmlExecutionProvider (DirectX 12 GPU, Windows only)
-    #   "cuda"      → CUDAExecutionProvider (NVIDIA GPU, requires CUDA toolkit)
-    inference_device: str = os.getenv("INFERENCE_DEVICE", "cpu").lower()
-
-    # BATCH_FRAME_INTERVAL — extract 1 frame every N seconds from each clip.
-    #   Lower = more detections but more CPU/GPU work.  Default: 1 (1fps).
-    batch_frame_interval: int = int(os.getenv("BATCH_FRAME_INTERVAL", "1"))
-
-    # ── Fase 4 — Real-time inference + analytics ──────────────────────────────
-    # MOTION_THRESHOLD — fraction of changed pixels (0..1) required to pass the
-    #   motion gate and invoke ONNX.  0.015 = ~1.5 % of pixels changed; raise
-    #   it in flickering-screen / AC-vent environments.
-    motion_threshold: float = float(os.getenv("MOTION_THRESHOLD", "0.015"))
-
-    # LIVE_POLL_INTERVAL — seconds between preview JPEG reads for live inference.
-    #   0.5 matches the preview_fps=2 written by FFmpegRecorderAdapter.
-    live_poll_interval: float = float(os.getenv("LIVE_POLL_INTERVAL", "0.5"))
-
-    # TRACKER_IOU_THRESHOLD — minimum IoU to match a detection to an existing
-    #   track (greedy SORT-lite).  0.3 is a good general default.
-    tracker_iou_threshold: float = float(os.getenv("TRACKER_IOU_THRESHOLD", "0.3"))
-
-    # TRACKER_MAX_AGE — frames a track may go unmatched before eviction.
-    #   At 2fps, 5 frames = 2.5 s of grace.
-    tracker_max_age: int = int(os.getenv("TRACKER_MAX_AGE", "5"))
-
-    # ── Batch FFmpeg governance (PoC-2, ffmpeg-pipeline-optimization-research.md §4) ──
+    # ──     # ── Batch FFmpeg governance (PoC-2, ffmpeg-pipeline-optimization-research.md §4) ──
     # MAX_BATCH_FFMPEG — max offline/background FFmpeg encodes running at once
     #   (hourly/combined clip builders, mp4 converter, batch analyzer). Flattens
     #   CPU/RAM spikes and keeps concurrent HW-encode sessions under vendor

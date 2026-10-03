@@ -25,3 +25,8 @@ segments/
 
 # OneDrive conflict copies (multi-PC sync) — e.g. Main-DESKTOP-P84Q52M.qml
 *-DESKTOP-*
+
+# Local environment
+.venv/
+.env
+.pytest_cache/

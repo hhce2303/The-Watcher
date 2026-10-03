@@ -53,7 +53,7 @@ class TestBuildTaskXml:
         from app.infrastructure.scheduled_task import build_task_xml
         xml = build_task_xml(user="DOMAIN\\op")
         assert "<Command>C:\\Py\\python.exe</Command>" in xml
-        assert "<Arguments>-m app.main --daemon</Arguments>" in xml
+        assert "<Arguments>-m app.daemon_root --daemon</Arguments>" in xml
 
     def test_xml_escapes_special_chars(self, monkeypatch):
         monkeypatch.setattr(sys, "frozen", True, raising=False)

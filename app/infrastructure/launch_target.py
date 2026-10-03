@@ -24,7 +24,7 @@ from typing import Optional, Sequence
 
 def launch_argv(extra_args: Optional[Sequence[str]] = None) -> list[str]:
     """Argument vector that starts a fresh instance (for ``subprocess``)."""
-    base = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "app.main"]
+    base = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "app.daemon_root"]
     return base + list(extra_args or [])
 
 
@@ -38,6 +38,6 @@ def launch_command_string(extra_args: Optional[Sequence[str]] = None) -> str:
 
     Tokens containing spaces are quoted so the OS parses the executable path
     correctly.  Frozen → ``"<exe>" [extra_args]``; source →
-    ``"<python>" -m app.main [extra_args]``.
+    ``"<python>" -m app.daemon_root [extra_args]``.
     """
     return " ".join(_quote(part) for part in launch_argv(extra_args))

@@ -7,7 +7,7 @@ import sys
 def test_launch_argv_source(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     from app.infrastructure.launch_target import launch_argv
-    assert launch_argv() == [sys.executable, "-m", "app.main"]
+    assert launch_argv() == [sys.executable, "-m", "app.daemon_root"]
 
 
 def test_launch_argv_frozen(monkeypatch):
@@ -20,8 +20,8 @@ def test_command_string_source_includes_module(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     from app.infrastructure.launch_target import launch_command_string
     cmd = launch_command_string()
-    assert cmd.endswith("-m app.main")
-    assert "app.main" in cmd
+    assert cmd.endswith("-m app.daemon_root")
+    assert "app.daemon_root" in cmd
 
 
 def test_command_string_quotes_paths_with_spaces(monkeypatch):
@@ -55,7 +55,7 @@ def test_relaunch_argv_delegates_to_launch_target(monkeypatch):
 def test_launch_argv_appends_extra_args_source(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
     from app.infrastructure.launch_target import launch_argv
-    assert launch_argv(["--daemon"]) == [sys.executable, "-m", "app.main", "--daemon"]
+    assert launch_argv(["--daemon"]) == [sys.executable, "-m", "app.daemon_root", "--daemon"]
 
 
 def test_launch_argv_appends_extra_args_frozen(monkeypatch):
