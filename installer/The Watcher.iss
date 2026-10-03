@@ -3,14 +3,17 @@
 ;
 ; Requirements: Inno Setup 6  https://jrsoftware.org/isdl.php
 ;
-; Build (from project/ directory):
+; Build (from the repository root):
 ;   iscc installer\The Watcher.iss
 ;
 ; Output: dist\Setup-The Watcher.exe
 ; ===========================================================================
 
 #define AppName      "The Watcher"
-#define AppVersion   "0.1.0-test"
+#ifndef AppVersion
+  ; build.ps1 passes /DAppVersion=<app.__version__>
+  #define AppVersion "0.1.0"
+#endif
 #define AppPublisher "SIG Systems"
 #define AppExeName   "The Watcher.exe"
 #define AppURL       "https://sigsystems.com"
@@ -175,26 +178,6 @@ begin
   RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#AppName}');
 end;
 
-procedure WriteOperatorProfile();
-var
-  ProfilePath: String;
-  ProfileJson: String;
-begin
-  ProfilePath := ExpandConstant('{localappdata}\{#AppName}\user_config.json');
-  ProfileJson :=
-    '{' + #13#10 +
-    '  "clips_dir": null,' + #13#10 +
-    '  "selected_monitor_fingerprints": [],' + #13#10 +
-    '  "driver": "auto",' + #13#10 +
-    '  "codec": null,' + #13#10 +
-    '  "autorecord": true,' + #13#10 +
-    '  "it_ws_hosts": [],' + #13#10 +
-    '  "role": "operator"' + #13#10 +
-    '}';
-  if not SaveStringToFile(ProfilePath, ProfileJson, False) then
-    RaiseException('Could not write the Operator profile.');
-end;
-
 procedure ConfigureLiveViewFirewall();
 var
   ResultCode: Integer;
@@ -236,7 +219,6 @@ begin
     StopLegacyOperatorRuntime()
   else if CurStep = ssPostInstall then
   begin
-    WriteOperatorProfile();
     TrustProvisionedCertificates();
     ConfigureLiveViewFirewall();
   end;

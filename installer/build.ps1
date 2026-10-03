@@ -1,22 +1,19 @@
 ﻿<#
 .SYNOPSIS
-    Builds the The Watcher Windows executable (Milestone 8).
+    Builds The Watcher daemon (recording + LAN live view) for Windows.
 
 .DESCRIPTION
     1. Creates a clean build venv at C:\TW_Venv (comma-free path). This was
-       originally a workaround for a Qt/PyInstaller path-parsing bug; QML/
-       PySide6 are gone now (F3), but the repo path still contains a comma
-       ("SIG Systems, Inc"), and other PyInstaller hooks have shown similar
-       comma-sensitivity, so the clean-path venv/junction stays as a safe
-       default rather than re-introducing that risk.
-    2. Creates a junction C:\TW_Build -> project root (also comma-free) so
+       kept from the monorepo as a safe default: the checkout path may contain
+       a comma and PyInstaller hooks have shown comma-sensitivity.
+    2. Creates a junction C:\TW_Build -> repository root (also comma-free) so
        PyInstaller's pathex/spec work correctly.
     3. Runs PyInstaller with the spec file.
     4. Copies .env.example to dist/The Watcher/ as .env.
     5. Creates dist/The Watcher.zip for distribution.
 
 .USAGE
-    # From the project/ directory:
+    # From the repository root:
     .\installer\build.ps1
 
     # Or supply a custom output directory:
@@ -50,7 +47,7 @@ if (Test-Path $InitPy) {
     if ($m) { $Version = $m.Matches[0].Groups[1].Value }
 }
 
-# Paths used during build - must be comma-free so Qt/PyInstaller hooks work.
+# Paths used during build - must be comma-free (PyInstaller hooks are path-sensitive).
 $CleanVenv    = "C:\TW_Venv"
 $JunctionPath = "C:\TW_Build"
 
@@ -76,7 +73,6 @@ if ($NeedsVenvSetup) {
         "loguru==0.7.3" `
         "python-dotenv==1.2.2" `
         "pydantic==2.13.3" `
-        "websockets==16.0" `
         "aiohttp>=3.11,<4" `
         "PyJWT[crypto]>=2.10,<3" `
         "pyinstaller==6.20.0" `
@@ -339,7 +335,7 @@ if ($IsccPath -and (Test-Path $IssScript)) {
     Write-Host "Building Inno Setup installer..." -ForegroundColor Cyan
     Push-Location $ProjectRoot
     try {
-        $IsccArgs = @("/DSourceDir=$DistDir")
+        $IsccArgs = @("/DSourceDir=$DistDir", "/DAppVersion=$Version")
         if ($OutDir -ne "") {
             New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
             $IsccArgs += "/DOutputDir=$OutDir"

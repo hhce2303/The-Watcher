@@ -1,11 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# The Watcher — PyInstaller spec (Milestone 8)
+# The Watcher daemon - PyInstaller spec (recording + LAN live view)
 #
-# Build command (from project/ directory):
-#   pyinstaller installer/The Watcher.spec
+# Build command (from the repository root):
+#   pyinstaller --noconfirm installer/"The Watcher.spec"
 #
 # Output: dist/The Watcher/  (one-dir bundle)
+#   The Watcher.exe   windowed daemon (scheduled task / installer launch it)
+#   watcherctl.exe    console build of the same entry point for the CLI:
+#                     watcherctl stop|status|health   (the windowed exe has no stdout)
+#
+# The exe keeps the name "The Watcher" so existing installs (scheduled task,
+# Update-Watcher.ps1, certs deployment scripts) keep working unchanged.
 
 import os
 import shutil
@@ -56,17 +62,14 @@ print(f"[spec] Bundling FFmpeg: {_ffmpeg_exe}")
 # Paths
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = str(Path(SPECPATH).parent)
-_MAIN_SCRIPT  = str(Path(SPECPATH).parent / "app" / "main.py")
+_MAIN_SCRIPT  = str(Path(SPECPATH).parent / "app" / "daemon_root.py")
 _ENV_EXAMPLE  = str(Path(SPECPATH).parent / ".env.example")
 
 # ---------------------------------------------------------------------------
 # Analysis
 #
-# QML/PySide6 are gone (F3) — this bundle is the headless daemon/sidecar only.
-# The React/Tauri UI is a separate app that connects over the named pipe; see
-# docs/migration/reference-target-architecture.md. Packaging that
-# Tauri UI (and wiring this exe as its externalBin sidecar) is future work —
-# scope was "dev + purge" for this migration pass.
+# This bundle is the headless daemon only: no Qt, no Tauri, no IPC pipe, no
+# pywin32 (nothing under app/ imports it - see tests/test_import_purity.py).
 # ---------------------------------------------------------------------------
 a = Analysis(
     [_MAIN_SCRIPT],
@@ -89,20 +92,12 @@ a = Analysis(
         # Harmless if absent from site-packages: PyInstaller just skips it and
         # the app uses the FFmpeg fallback.
         "watcher_segments",
-        # ADR-0010/0011: the IPC + headless-runtime modules and pywin32
-        # submodules are imported LAZILY inside main()'s daemon/sidecar setup
-        # (the only path now — F3), so static analysis misses them. Declare
-        # them so the daemon/sidecar work in the frozen build.
-        "app.adapters.ipc.pipe_server",
-        "app.adapters.ipc.pipe_client",
-        "app.adapters.ipc.router",
+        # Imported lazily inside functions; declared so a frozen build never
+        # depends on PyInstaller's static analysis catching them.
         "app.runtime.headless",
-        "win32pipe",
-        "win32file",
-        "win32security",
-        "win32process",
-        "winerror",
-        "pywintypes",
+        "app.runtime.instance",
+        "app.adapters.live_view_lan",
+        "app.adapters.tls_provisioning",
     ],
     hookspath=[],
     hooksconfig={},
@@ -112,6 +107,8 @@ a = Analysis(
         "pytest",
         "pytest_timeout",
         "_pytest",
+        # Must never ship (import-purity gate): UI toolkits and ML stacks.
+        "PySide6", "PyQt5", "PyQt6", "tkinter", "numpy", "onnxruntime", "PIL",
     ],
     noarchive=False,
     optimize=0,
@@ -119,17 +116,12 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
+_exe_common = dict(
     exclude_binaries=True,
-    name="The Watcher",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False,          # no console window — headless daemon/sidecar (tray lives in Tauri)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -138,8 +130,14 @@ exe = EXE(
     # icon="assets/icon.ico",  # Uncomment and add icon.ico to assets/ if desired
 )
 
+# Windowed daemon: no console window on the operator's screen.
+exe = EXE(pyz, a.scripts, [], name="The Watcher", console=False, **_exe_common)
+# Console twin for the CLI (stdout is visible): watcherctl status / health / stop.
+ctl = EXE(pyz, a.scripts, [], name="watcherctl", console=True, **_exe_common)
+
 coll = COLLECT(
     exe,
+    ctl,
     a.binaries,
     a.zipfiles,
     a.datas,

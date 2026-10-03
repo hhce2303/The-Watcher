@@ -1,16 +1,19 @@
 name: Build daemon (Windows)
 
-# Manual build of the headless daemon/sidecar bundle (PyInstaller one-dir) for
-# hand-testing on a Windows machine. Uses the same spec as installer/build.ps1.
+# Builds the headless daemon bundle (PyInstaller one-dir) for hand-testing on a
+# Windows machine (watcher-win). Uses the same spec as installer/build.ps1.
 # The native Rust segment engine is skipped: the app falls back to FFmpeg.
+# The import-purity gate runs first: a bundle with editor/player/Qt/Tauri code
+# must never be produced.
 on:
   workflow_dispatch:
   push:
-    branches: [spike/editor-export-rust-encoder, stream-display-stations]
+    branches: [main]
     paths:
       - .github/workflows/build-daemon.yml
-      - project/installer/Update-Watcher.ps1
-      - project/installer/The Watcher.spec
+      - installer/**
+      - app/**
+      - requirements*.txt
 
 jobs:
   build:
@@ -21,21 +24,22 @@ jobs:
         with:
           python-version: "3.13"
           cache: "pip"
-          cache-dependency-path: project/requirements.txt
+          cache-dependency-path: requirements-dev.txt
       - name: Install Python dependencies
-        run: pip install -r project/requirements.txt
+        run: pip install -r requirements-dev.txt
       - name: Install FFmpeg
         run: choco install ffmpeg -y
+      - name: Import-purity gate
+        run: python -m pytest tests/test_import_purity.py -q
       - name: PyInstaller
-        working-directory: project
         run: pyinstaller --noconfirm --distpath dist --workpath build "installer/The Watcher.spec"
       - name: Stage .env
         shell: pwsh
         run: |
-          Copy-Item project/.env.example "project/dist/The Watcher/.env"
-          Copy-Item project/installer/Update-Watcher.ps1 "project/dist/The Watcher/"
+          Copy-Item .env.example "dist/The Watcher/.env"
+          Copy-Item installer/Update-Watcher.ps1 "dist/The Watcher/"
       - uses: actions/upload-artifact@v4
         with:
           name: the-watcher-daemon-windows
-          path: project/dist/The Watcher
+          path: dist/The Watcher
           retention-days: 14
