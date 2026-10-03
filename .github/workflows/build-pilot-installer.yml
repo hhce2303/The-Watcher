@@ -39,8 +39,6 @@ jobs:
       STATION_ID: ${{ inputs.station_id }}
       ENDPOINT_NAME: ${{ inputs.endpoint_name }}
       IP_ADDRESSES: ${{ inputs.ip_addresses }}
-      PROVISIONING_ROOT: ${{ runner.temp }}\watcher-provisioning
-      RELEASE_ROOT: ${{ github.workspace }}\release
     steps:
       - uses: actions/checkout@v4
 
@@ -72,12 +70,14 @@ jobs:
           if (-not [int]::TryParse($env:STATION_ID, [ref]$stationId) -or $stationId -lt 1) { throw 'station_id must be a positive integer.' }
           if ($env:ENDPOINT_NAME -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { throw 'endpoint_name has an invalid format.' }
 
-          $stationRoot = Join-Path $env:PROVISIONING_ROOT (Join-Path 'operators' $env:STATION_NAME)
+          $provisioningRoot = Join-Path $env:RUNNER_TEMP 'watcher-provisioning'
+          $releaseRoot = Join-Path $env:GITHUB_WORKSPACE 'release'
+          $stationRoot = Join-Path $provisioningRoot (Join-Path 'operators' $env:STATION_NAME)
           $certRoot = Join-Path $stationRoot 'certs'
           $trustRoot = Join-Path $certRoot 'trust'
-          New-Item -ItemType Directory -Force -Path $certRoot, $trustRoot, $env:RELEASE_ROOT | Out-Null
+          New-Item -ItemType Directory -Force -Path $certRoot, $trustRoot, $releaseRoot | Out-Null
 
-          $env:CAROOT = Join-Path $env:PROVISIONING_ROOT 'test-ca'
+          $env:CAROOT = Join-Path $provisioningRoot 'test-ca'
           mkcert -install
           if ($LASTEXITCODE -ne 0) { throw "mkcert -install failed with exit code $LASTEXITCODE." }
 
@@ -101,7 +101,7 @@ jobs:
           $rootCertificate = Join-Path $env:CAROOT 'rootCA.pem'
           if (-not (Test-Path -LiteralPath $rootCertificate -PathType Leaf)) { throw 'mkcert did not generate rootCA.pem.' }
           Copy-Item $rootCertificate (Join-Path $trustRoot 'watcher-pilot-rootCA.pem') -Force
-          Copy-Item $rootCertificate (Join-Path $env:RELEASE_ROOT 'watcher-pilot-rootCA.pem') -Force
+          Copy-Item $rootCertificate (Join-Path $releaseRoot 'watcher-pilot-rootCA.pem') -Force
 
           $profile = @(
             'LIVE_VIEW_ENABLED=true'
@@ -132,6 +132,7 @@ jobs:
           $profilePath = Join-Path $stationRoot 'operator-deployment.env'
           [System.IO.File]::WriteAllLines($profilePath, $profile, [System.Text.UTF8Encoding]::new($false))
           "OPERATOR_DEPLOYMENT_CONFIG=$profilePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "RELEASE_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build field installer
         shell: pwsh
