@@ -21,7 +21,7 @@ copied code keeps these defects. Original item numbers are in brackets.
 | B-13 [#28] | Live view: `ddagrab` fails as a second capture (`Invalid argument -22`), falls back to gdigrab + software x264; CPU unmeasured. | `adapters/live_view_lan/h264_feed.py` | Blocks judging NFR-Perf-7 (<=5% CPU/monitor). Linux cannot reproduce it. |
 | B-14 [#29] | Watchdog did not relaunch the daemon after it died (cause not established). | `scheduled_task.py` | Reproduce with/without a manual `schtasks /end`. |
 | B-15 [#30] | CI never ran pytest and skipped builds on `app/` changes. | `.github/workflows/` | **Addressed structurally here** (`ci.yml`, widened paths); unverified until it runs remotely. |
-| B-16 | Firewall rule in `The Watcher.iss` opens TCP **8767** while `LIVE_VIEW_PORT` defaults to **8766** (`.env.example`, `config.py`). | `installer/The Watcher.iss` | Found during extraction; inherited inconsistency, not changed. Verify which port is real on watcher-win. |
+| B-16 | **Resolved:** `LIVE_VIEW_PORT` default and `.env.example` aligned to **8767**, matching the firewall rule in `The Watcher.iss` and the `the-watcher-certs` deployment profile. | `app/infrastructure/config.py`, `.env.example` | Still confirm on watcher-win (V-10) that the port is reachable on the LAN. |
 
 Not carried (their code is out of scope, ADR-0003): #22 `LivePreviewService` watchdog, #23 MJPEG stream catch-all,
 #26 `BatchClipAnalyzer` retry, #8 truncated-preview negative test for the MJPEG preview server.

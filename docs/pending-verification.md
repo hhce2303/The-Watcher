@@ -14,4 +14,4 @@ and must be checked on `watcher-win` (Windows Operator test PC) or in Windows CI
 | V-7 | `.github/workflows/ci.yml` and `build-daemon.yml` run green. | Not executed remotely (no remote exists). Only YAML syntax was parsed locally. |
 | V-8 | Real recording boot (`start_recording=True`) imports nothing forbidden. | The purity test boots with `start_recording=False` to avoid spawning ffmpeg; the recording path is covered statically. |
 | V-9 | `installer/build.ps1` and `The Watcher.iss` (`/DAppVersion`, removed profile writer) and `the-watcher-certs` scripts (`New-OperatorTestDeployment.ps1 -BuildScript` expects the monorepo layout `project\installer\build.ps1`). | PowerShell/Inno Setup, not run. |
-| V-10 | Port consistency: firewall rule 8767 vs `LIVE_VIEW_PORT` 8766 (backlog B-16). | Needs the deployed station. |
+| V-10 | Port 8767 reachable from a Supervisor PC (firewall rule, `LIVE_VIEW_PORT` default and certs profile now agree; B-16 resolved in code). | Needs the deployed station. |

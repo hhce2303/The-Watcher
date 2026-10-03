@@ -191,7 +191,7 @@ class Settings:
     # firewall rule and Daily issuer key to an enrolled Operator.
     live_view_enabled: bool = _env_flag("LIVE_VIEW_ENABLED", False)
     live_view_bind_host: str = os.getenv("LIVE_VIEW_BIND_HOST", "0.0.0.0")
-    live_view_port: int = int(os.getenv("LIVE_VIEW_PORT", "8766"))
+    live_view_port: int = int(os.getenv("LIVE_VIEW_PORT", "8767"))
     live_view_origin: str = os.getenv("LIVE_VIEW_ORIGIN", "").rstrip("/")
     live_view_parent_origin: str = os.getenv(
         "LIVE_VIEW_PARENT_ORIGIN", "https://daily.sig.systems"
