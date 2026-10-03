@@ -78,8 +78,23 @@ jobs:
           New-Item -ItemType Directory -Force -Path $certRoot, $trustRoot, $releaseRoot | Out-Null
 
           $env:CAROOT = Join-Path $provisioningRoot 'test-ca'
-          mkcert -install
-          if ($LASTEXITCODE -ne 0) { throw "mkcert -install failed with exit code $LASTEXITCODE." }
+          # GitHub-hosted Windows runners can hang while mkcert tries to add
+          # its temporary root to unavailable browser trust stores. We need
+          # the generated root for this pilot, not runner-local trust. Once
+          # rootCA.pem exists, stop that best-effort trust installation and
+          # continue; the resulting installer imports the public root for its
+          # actual Operator user during setup.
+          $mkcertInstall = Start-Process -FilePath 'mkcert.exe' -ArgumentList '-install' -PassThru
+          if (-not $mkcertInstall.WaitForExit(45)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $env:CAROOT 'rootCA.pem') -PathType Leaf)) {
+              Stop-Process -Id $mkcertInstall.Id -Force
+              throw 'mkcert did not generate rootCA.pem before its runner trust installation timed out.'
+            }
+            Stop-Process -Id $mkcertInstall.Id -Force
+            Write-Host 'Skipped runner-local mkcert trust installation after root generation.'
+          } elseif ($mkcertInstall.ExitCode -ne 0) {
+            throw "mkcert -install failed with exit code $($mkcertInstall.ExitCode)."
+          }
 
           $ipAddresses = @($env:IP_ADDRESSES -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           foreach ($address in $ipAddresses) {
