@@ -89,7 +89,7 @@ gyan.dev full) el child device de QSV es d3d11va por defecto, el prerequisito de
 `[DOC: ffmpeg-devel enero 2024]`. El patrón split 1:N sobre frames QSV está documentado en la wiki
 oficial de QuickSync `[DOC]`.
 
-Cambio concreto (todo en [recorder_adapter.py:202-322](../../project/app/adapters/ffmpeg/recorder_adapter.py#L202-L322)):
+Cambio concreto (todo en [recorder_adapter.py:202-322](../../app/adapters/ffmpeg/recorder_adapter.py#L202-L322)):
 
 ```text
 # HOY (rama ddagrab con preview):
@@ -120,7 +120,7 @@ más `-async_depth 1` en el encoder QSV. La conversión BGRA→NV12 y el scale p
   GPU**. ddagrab captura en el adaptador del monitor; si un monitor cuelga de la dGPU NVIDIA y el
   encode va a QSV (iGPU), el hwmap falla → el probe de arranque debe probar el grafo zero-copy
   **por monitor** y caer al legacy si falla (extender el probe existente de
-  [recorder_adapter.py:358](../../project/app/adapters/ffmpeg/recorder_adapter.py#L358)).
+  [recorder_adapter.py:358](../../app/adapters/ffmpeg/recorder_adapter.py#L358)).
 - Rollback: flag de config (p. ej. `CAPTURE_PIPELINE=auto|zerocopy|legacy`) + fallback automático
   del probe. Riesgo residual ≈ 0: es el mismo binario FFmpeg, mismo formato de segmentos `.ts`,
   mismos SPS/PPS uniformes (el compilador Rust y el concat lossless no se enteran).
@@ -128,14 +128,14 @@ más `-async_depth 1` en el encoder QSV. La conversión BGRA→NV12 y el scale p
 ### 3.2 Clip de evento en una sola pasada (quick win #3)
 
 Hoy cada clip de evento son **dos procesos secuenciales**: trim/concat
-([trim_adapter.py:315](../../project/app/adapters/ffmpeg/trim_adapter.py#L315)) y luego un re-encode
+([trim_adapter.py:315](../../app/adapters/ffmpeg/trim_adapter.py#L315)) y luego un re-encode
 completo solo para quemar el timestamp
-([timestamp_adapter.py:126](../../project/app/adapters/ffmpeg/timestamp_adapter.py#L126)). Matiz importante
+([timestamp_adapter.py:126](../../app/adapters/ffmpeg/timestamp_adapter.py#L126)). Matiz importante
 tras validar contra el código:
 
 - **Multi-monitor (composite):** hoy son 2 encodes (xstack + burn). Plegar el `drawtext` en el
   filter_complex del composite — exactamente como ya hace
-  [combined_clip_builder.py](../../project/app/adapters/ffmpeg/combined_clip_builder.py) — **elimina un
+  [combined_clip_builder.py](../../app/adapters/ffmpeg/combined_clip_builder.py) — **elimina un
   encode completo** (~50% del costo del clip).
 - **Single-monitor:** hoy es copy (barato) + 1 encode (burn) — una sola pasada
   decode+drawtext+encode cuesta lo mismo en encodes; la ganancia es solo un proceso y un archivo
@@ -157,7 +157,7 @@ tras validar contra el código:
 
 Un solo FFmpeg con N grafos ddagrab + N muxers segment es posible, pero:
 un crash mata la grabación de **todos** los monitores a la vez (hoy el blast radius es un monitor);
-el supervisor per-monitor con backoff ([supervisor.py](../../project/app/core/recording_service/supervisor.py))
+el supervisor per-monitor con backoff ([supervisor.py](../../app/core/recording_service/supervisor.py))
 y el hot-add/remove de monitores (workers dinámicos cada 5 s) están diseñados alrededor del
 proceso-por-monitor; y el ahorro real es pequeño (el overhead por proceso es fijo, ~decenas de MB —
 el costo está en los píxeles, que no cambia). El aislamiento vale más que el ahorro. Con zero-copy,
@@ -193,8 +193,8 @@ anotarlo por si aparece un caso RDP.
      BELOW_NORMAL` + `JobMemoryLimit` configurable. Opcional endurecer a `HARD_CAP` (p. ej. 40%)
      vía config para máquinas muy justas — el batch tolera congelarse.
 2. **Cerrar el hueco de huérfanos:** enrolar
-   [mp4_converter_adapter.py:63](../../project/app/adapters/ffmpeg/mp4_converter_adapter.py#L63) y
-   [batch_clip_analyzer.py:113](../../project/app/core/analytics/batch_clip_analyzer.py#L113) (hoy fuera de
+   mp4_converter_adapter.py:63 *(monorepo, not carried over)* y
+   batch_clip_analyzer.py:113 *(monorepo, not carried over)* (hoy fuera de
    todo Job; el analyzer además sin `CREATE_NO_WINDOW`).
 3. **Presupuesto global de concurrencia:** hoy cada monitor tiene su propio executor de builder →
    hasta N builds horarios simultáneos + grid + batch + evento. Sustituir por un semáforo/cola

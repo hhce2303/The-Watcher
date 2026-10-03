@@ -2,7 +2,7 @@
 
 - **Estado**: Aceptado
 - **Fecha**: 2026-07-12
-- **Relación**: corrige un defecto en la costura descrita por [ADR-0004](ADR-0004-ai-detection-seams.md)
+- **Relación**: corrige un defecto en la costura descrita por ADR-0004 *(monorepo, not carried over)*
   (`DetectorPort` → `AutoEventService` → callback de build). No cambia la costura, solo cómo
   `app/runtime/backend.py` la conecta con `EventService`.
 

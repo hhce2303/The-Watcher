@@ -31,9 +31,9 @@ venv en Windows; los entornos son multi-PC (OneDrive) y los venvs se recrean por
 
 - ✅ Rendimiento y latencia predecibles en el caso común; bundle limpio (un solo `.pyd`, sin DLLs).
 - ✅ Core testeable (port mockeable); la app arranca aunque falte el `.pyd` (fallback FFmpeg).
-- ✅ Establece la cadena PyO3/maturin, reutilizable para la inferencia ONNX/`ort` futura ([ADR-0005](ADR-0005-yolo-licensing.md)).
+- ✅ Establece la cadena PyO3/maturin, reutilizable para la inferencia ONNX/`ort` futura (ADR-0005 *(monorepo, not carried over)*).
 - ➖ Nueva dependencia de build: toolchain Rust (rustup + MSVC) y maturin en `setup_env.ps1`/`build.ps1`;
   el `.pyd` se compila por máquina.
-- ➖ Hay que respetar el `segment_floor` ([buffer_manager.py L79](../../../project/app/core/recording_service/buffer_manager.py#L79)):
+- ➖ Hay que respetar el `segment_floor` ([buffer_manager.py L79](../../../app/core/recording_service/buffer_manager.py#L79)):
   el motor solo recibe segmentos de dimensiones compatibles (R-NF5).
 - ➖ Cuidado con la detección de DLLs transitivas del `.pyd` en PyInstaller (mitigado por usar crates puros).

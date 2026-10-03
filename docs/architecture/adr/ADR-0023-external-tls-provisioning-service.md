@@ -3,7 +3,7 @@
 - **Estado**: Aceptado (preguntas abiertas resueltas 2026-10-02)
 - **Fecha**: 2026-09-30
 - **Requisitos**: NFR-Seg-4, NFR-Seg-5
-- **Relacionado**: [ADR-0020](ADR-0020-browser-local-daily-channel.md), [ADR-0021](ADR-0021-supervision-lan-live-view.md), [ADR-0011](ADR-0011-local-ipc-security.md); contrato de archivos en [`../tls-provisioning-contract.md`](../tls-provisioning-contract.md)
+- **Relacionado**: ADR-0020 *(monorepo, not carried over)*, [ADR-0021](ADR-0021-supervision-lan-live-view.md), ADR-0011 *(monorepo, not carried over)*; contrato de archivos en [`../tls-provisioning-contract.md`](../tls-provisioning-contract.md)
 
 ## Contexto
 
