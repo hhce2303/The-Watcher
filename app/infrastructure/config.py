@@ -196,11 +196,33 @@ class Settings:
     live_view_parent_origin: str = os.getenv(
         "LIVE_VIEW_PARENT_ORIGIN", "https://daily.sig.systems"
     ).rstrip("/")
-    # ADR-0023: "file" reads the *_FILE paths below; "remote" (not yet implemented)
-    # will enrol against the external TLS provisioning service.
+    # ADR-0023: "file" reads the *_FILE paths below (default, behaviour-preserving);
+    # "remote" enrols against the external `the-watcher-certs` issuance service
+    # (phase 3) using the settings below. Additive only — "file" is unaffected.
     tls_provisioning_mode: str = os.getenv("TLS_PROVISIONING_MODE", "file").lower()
     live_view_cert_file: str = _resolve_file("LIVE_VIEW_CERT_FILE")
     live_view_key_file: str = _resolve_file("LIVE_VIEW_KEY_FILE")
+    # -- "remote" mode only (ADR-0023 phase 3) --
+    # Base URL of the `the-watcher-certs` issuance service; POST /v1/certificates
+    # is appended by the adapter. Empty by default — "remote" mode fails closed
+    # with a clear error if this is unset.
+    tls_provisioning_url: str = os.getenv("TLS_PROVISIONING_URL", "")
+    # Client trust anchor (PEM) used to pin the HTTPS connection *to the issuance
+    # service itself*. This is NOT the daemon's own TLS material and is never the
+    # system trust store — path/reference only, never real CA material in the repo.
+    tls_provisioning_pinned_ca_file: str = _resolve_file("TLS_PROVISIONING_PINNED_CA_FILE")
+    # Bounded connect/read timeout (seconds) for the issuance request. A small,
+    # sane default — the daemon must never hang indefinitely waiting on IT's
+    # issuance service; it fails closed and retries with backoff instead.
+    tls_provisioning_timeout_seconds: float = float(
+        os.getenv("TLS_PROVISIONING_TIMEOUT_SECONDS", "10")
+    )
+    # Where the locally generated private key and the issued certificate/chain
+    # are persisted (atomically, owner-only permissions). Never renewed/rotated
+    # here — one issuance per installation (ADR-0023).
+    tls_provisioning_material_dir: Path = _resolve_dir(
+        "TLS_PROVISIONING_MATERIAL_DIR", r"C:\WatcherData\tls_material"
+    )
     live_view_issuer: str = os.getenv("LIVE_VIEW_ISSUER", "daily.sig.systems")
     live_view_audience: str = os.getenv("LIVE_VIEW_AUDIENCE", "the-watcher-live")
     live_view_issuer_kid: str = os.getenv("LIVE_VIEW_ISSUER_KID", "")

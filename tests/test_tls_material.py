@@ -48,9 +48,41 @@ def test_factory_defaults_to_file_mode_from_live_view_settings(tmp_path):
     assert build_tls_material(settings).ensure().cert_file == str(cert)
 
 
-def test_factory_rejects_unimplemented_remote_mode():
-    settings = SimpleNamespace(tls_provisioning_mode="remote", live_view_cert_file="", live_view_key_file="")
-    with pytest.raises(TlsMaterialError, match="remote"):
+def _remote_settings(tmp_path: Path, **overrides) -> SimpleNamespace:
+    ca = tmp_path / "pinned-ca.pem"
+    ca.write_text("placeholder-pem-path-only")  # construction only; adapter never reads it here
+    defaults = dict(
+        tls_provisioning_mode="remote",
+        tls_provisioning_url="https://certs.internal.lan",
+        tls_provisioning_pinned_ca_file=str(ca),
+        tls_provisioning_timeout_seconds=10.0,
+        tls_provisioning_material_dir=tmp_path / "material",
+        live_view_cert_file="", live_view_key_file="",
+        live_view_origin="https://op.lan:8767",
+        live_view_station_id=7,
+        browser_local_data_dir=tmp_path / "identity",
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_factory_builds_a_remote_adapter_wired_from_settings(tmp_path):
+    from app.adapters.tls_provisioning.remote_adapter import RemoteTlsMaterialAdapter
+
+    settings = _remote_settings(tmp_path)
+
+    adapter = build_tls_material(settings)
+
+    assert isinstance(adapter, RemoteTlsMaterialAdapter)
+    assert isinstance(adapter, TlsMaterialPort)
+    assert adapter._url == "https://certs.internal.lan/v1/certificates"
+    assert adapter._station_id == 7
+    assert adapter._expected_hostname == "op.lan"
+
+
+def test_factory_remote_mode_fails_closed_without_issuance_url(tmp_path):
+    settings = _remote_settings(tmp_path, tls_provisioning_url="")
+    with pytest.raises(TlsMaterialError, match="TLS_PROVISIONING_URL"):
         build_tls_material(settings)
 
 

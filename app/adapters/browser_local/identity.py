@@ -15,6 +15,7 @@ from loguru import logger
 
 _CHALLENGE_CONTEXT = b"the-watcher-browser-local:v1:"
 _LIVE_HEARTBEAT_CONTEXT = b"the-watcher-live-heartbeat:v1:"
+_TLS_ISSUANCE_CONTEXT = b"the-watcher-tls-issuance:v1:"
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,20 @@ class DeviceIdentity:
     def sign_live_heartbeat(self, canonical_payload: str) -> str:
         """Sign the exact, server-validated Daily live-heartbeat payload."""
         signature = self._private_key.sign(_LIVE_HEARTBEAT_CONTEXT + canonical_payload.encode("utf-8"))
+        return base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+
+    def sign_tls_issuance_request(self, canonical_payload: str) -> str:
+        """Sign the exact canonical TLS-issuance request (ADR-0023 phase 3).
+
+        Distinct signing domain from ``sign_challenge``/``sign_live_heartbeat``
+        so a captured issuance signature can never be replayed as a bootstrap
+        challenge or heartbeat signature, or vice versa.
+        """
+        return self.sign_tls_issuance_bytes(canonical_payload.encode("utf-8"))
+
+    def sign_tls_issuance_bytes(self, canonical_payload: bytes) -> str:
+        """Sign binary canonical issuance bytes (length-prefixed protocol v1)."""
+        signature = self._private_key.sign(_TLS_ISSUANCE_CONTEXT + canonical_payload)
         return base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
 
     def enrollment_payload(self) -> dict[str, str]:

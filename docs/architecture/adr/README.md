@@ -14,6 +14,7 @@ los siguientes ADRs nuevos usan **0024** en adelante, para no chocar con los her
 | [0001](ADR-0001-recording-streaming-source-of-truth.md) | Fuente de verdad de grabación y streaming | Aceptado |
 | [0002](ADR-0002-thin-composition-root-and-daemon-api.md) | Raíz de composición delgada y `DaemonApi` mínima | Aceptado |
 | [0003](ADR-0003-exclude-auto-event-service-and-preview-server.md) | `auto_event_service` y `preview_server` MJPEG quedan fuera del daemon | Aceptado |
+| [0024](ADR-0024-tls-issuance-governance.md) | Gobernanza de emisión TLS: step-ca tras broker, claves separadas, nonce duradero y piloto de 90 días (enmienda 0023) | Aceptado |
 
 ## ADRs heredados del monorepo (IDs del monorepo, copiados tal cual)
 
@@ -33,7 +34,7 @@ no copiados (0001–0005, 0008–0012, 0018, 0020) se muestran como texto. Solo 
 | [0019](ADR-0019-auto-event-clip-build-coalescing.md) | Auto-eventos: build de clip por EventService (retry+logging) + coalescencia de ventana (fix sobreesfuerzo) | Aceptado |
 | [0021](ADR-0021-supervision-lan-live-view.md) | Supervisión LAN autenticada para vistas en vivo | Aceptado (transporte enmendado por 0022) |
 | [0022](ADR-0022-live-view-h264-websocket.md) | Live view: H.264 sobre un único WebSocket, MJPEG como respaldo | Aceptado |
-| [0023](ADR-0023-external-tls-provisioning-service.md) | Aprovisionamiento TLS como servicio externo (`the-watcher-certs`), CSR desde el daemon, emisión única, CA local de IT | Aceptado |
+| [0023](ADR-0023-external-tls-provisioning-service.md) | Aprovisionamiento TLS como servicio externo (`the-watcher-certs`), CSR desde el daemon, emisión única, CA local de IT | Aceptado (pendientes de fase 2 fijados por [0024](ADR-0024-tls-issuance-governance.md)) |
 
 Los ADR-0008..0012 (migración de UI a Tauri 2.0, IPC, roles) permanecen solo en el monorepo y no aplican aquí:
 este daemon no tiene UI Tauri ni pipe IPC (ADR-0002).
