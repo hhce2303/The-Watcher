@@ -32,4 +32,4 @@ tooling, no key material and no CA names.
 Private keys never enter the repo or an installer beyond the station's own leaf key.
 The CA private key stays with the provisioning service.
 
-Evolution: [ADR-0023](adr/ADR-0023-external-tls-provisioning-service.md) proposes a runtime CSR-based service behind a `TlsMaterialPort`; this file contract stays as the `file` mode.
+Evolution: [ADR-0023](adr/ADR-0023-external-tls-provisioning-service.md) defines a runtime CSR-based, issue-once service behind a `TlsMaterialPort`; this file contract stays as the `file` mode.

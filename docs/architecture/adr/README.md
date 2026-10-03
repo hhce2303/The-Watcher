@@ -28,6 +28,6 @@ cambia, se crea un ADR nuevo que la *supersede*.
 | [0020](ADR-0020-browser-local-daily-channel.md) | Canal browser-local HTTPS/WSS separado para el iframe Daily SIG Systems | Aceptado |
 | [0021](ADR-0021-supervision-lan-live-view.md) | Supervisión LAN autenticada para vistas en vivo | Aceptado (transporte enmendado por 0022) |
 | [0022](ADR-0022-live-view-h264-websocket.md) | Live view: H.264 sobre un único WebSocket, MJPEG como respaldo | Aceptado |
-| [0023](ADR-0023-external-tls-provisioning-service.md) | Aprovisionamiento TLS como servicio externo (`the-watcher-certs`), CSR desde el daemon | Propuesto |
+| [0023](ADR-0023-external-tls-provisioning-service.md) | Aprovisionamiento TLS como servicio externo (`the-watcher-certs`), CSR desde el daemon, emisión única, CA local de IT | Aceptado |
 
 ADR-0008..0012 son la migración de UI a Tauri 2.0 — ver [`docs/migration/`](../../migration/README.md).

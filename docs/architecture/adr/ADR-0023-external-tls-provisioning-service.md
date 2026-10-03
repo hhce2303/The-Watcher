@@ -1,6 +1,6 @@
 # ADR-0023 — Aprovisionamiento TLS como servicio externo (`the-watcher-certs`)
 
-- **Estado**: Propuesto
+- **Estado**: Aceptado (preguntas abiertas resueltas 2026-10-02)
 - **Fecha**: 2026-09-30
 - **Requisitos**: NFR-Seg-4, NFR-Seg-5
 - **Relacionado**: [ADR-0020](ADR-0020-browser-local-daily-channel.md), [ADR-0021](ADR-0021-supervision-lan-live-view.md), [ADR-0011](ADR-0011-local-ipc-security.md); contrato de archivos en [`../tls-provisioning-contract.md`](../tls-provisioning-contract.md)
@@ -32,37 +32,50 @@ certificado loopback. Hoy el material lo produce a mano `the-watcher-certs`
      instalaciones existentes y para desarrollo.
    - `remote`: enrola contra el servicio `the-watcher-certs` en `TLS_PROVISIONING_URL`.
 3. **Protocolo `remote` (CSR, la clave privada nunca sale de la estación)**:
-   - El daemon genera par de claves y CSR localmente, con los SAN del endpoint de la estación.
+   - En el primer arranque tras una instalación, el daemon genera par de claves y CSR localmente,
+     con los SAN del endpoint de la estación.
    - Envía `POST /v1/certificates` con CSR + `device_id` + `station_id` + nonce, firmados con la clave
      Ed25519 enrolada del dispositivo (mismo esquema de firma de los heartbeats).
    - El servicio verifica que el dispositivo esté enrolado y ligado a esa estación (consulta a
-     Daily/Supabase), firma con la CA interna y responde con cadena + CAs de confianza.
-   - Certificados de vida corta (objetivo: 30 días); renovación al consumir 2/3 de la vida, con
-     reintento y backoff. El transporte hacia el servicio es HTTPS validado contra un ancla de
-     confianza que viaja en el instalador (`certs/trust/`), no contra el almacén del sistema.
+     Daily/Supabase), firma con la CA local de IT y responde con cadena + CA.
+   - **Sin renovación.** Un equipo se formatea cada ~3 meses y la reinstalación vuelve a enrolar y
+     emitir, así que el certificado se emite una vez por instalación con una validez larga (objetivo:
+     10 años, "permanente" en la práctica; X.509 exige un `notAfter`). No hay lógica de renovación ni
+     de reintento periódico en el daemon: solo reintento de la emisión inicial con backoff.
+   - El transporte hacia el servicio es HTTPS validado contra la CA local, cuyo ancla de confianza
+     viaja en el instalador (`certs/trust/`), no contra el almacén del sistema.
 4. **Falla cerrada, nunca degradada**: sin material válido, el listener TLS no arranca. Nunca baja a
-   HTTP ni a certificados autofirmados. Un certificado vigente sigue sirviendo mientras la renovación
-   falla; solo al vencer se desactiva la vista en vivo y se emite un evento de salud/heartbeat.
+   HTTP ni a certificados autofirmados. Si el servicio no responde en la primera emisión, la vista en
+   vivo queda desactivada y se reporta en el heartbeat/salud hasta que IT lo recupere.
 5. **El daemon no modifica el almacén de confianza en runtime.** La confianza en la CA de los
    navegadores del Supervisor sigue siendo del instalador/gestión de endpoints (contrato de archivos
    `certs/trust/*.pem`), no del daemon.
-6. **`the-watcher-certs` pasa a ser un servicio desplegable** además de contener los scripts. Los
-   scripts mkcert quedan como *proveedor de pruebas* (CA de prueba); producción usa la CA
-   corporativa detrás del servicio. El contrato entre repos es solo este ADR más el contrato de
-   archivos; no hay dependencia de código en ningún sentido.
+6. **`the-watcher-certs` pasa a ser un servicio desplegable**, operado solo por IT dentro de la LAN,
+   que firma con una **CA local propia** (sin CA pública ni corporativa certificada; consistente con
+   ADR-0021). Los scripts mkcert actuales siguen sirviendo como proveedor de pruebas. El contrato
+   entre repos es solo este ADR más el contrato de archivos; no hay dependencia de código.
+7. **`browser_local` queda fuera del servicio.** Su certificado loopback (`localhost`, un usuario)
+   sigue emitiéndose localmente; `TlsMaterialPort` solo cubre `live_view_lan`.
 
 ## Consecuencias
 
-- Rotación y revocación dejan de requerir reinstalar; el instalador ya no embebe la clave privada de
-  la estación cuando se usa `remote` (solo el ancla de confianza).
-- Nuevo punto de disponibilidad: si el servicio cae, las estaciones siguen con su certificado vigente
-  hasta `not_after`; el margen 1/3 de vida es el presupuesto de indisponibilidad tolerada.
+- Reinstalar una estación ya no requiere reconstruir el instalador con un certificado por equipo: el
+  instalador solo lleva el ancla de confianza y la URL del servicio. No hay clave privada de estación
+  en el instalador.
+- **Revocación = vida de la instalación.** No hay CRL/OCSP: el certificado es de transporte y la
+  autorización real es la assertion de Daily (ADR-0021), así que dar de baja una estación se hace
+  deshabilitando su dispositivo en Daily y negándole nueva emisión en el servicio. Un certificado
+  extraviado de un equipo dado de baja no da acceso por sí solo. Riesgo residual: con validez de 10
+  años, un certificado filtrado seguirá siendo válido para suplantar el *servidor* hasta rotar la CA;
+  la rotación de CA es la medida extrema (reemite todas las estaciones al reinstalar/re-enrolar).
+- Nuevo punto de disponibilidad solo en el momento de instalar/enrolar: si el servicio cae, las
+  estaciones ya enroladas no se ven afectadas.
 - Nueva superficie de seguridad: el endpoint de emisión es un firmante de CA. Debe autenticar
   dispositivo y estación, limitar SAN a lo asociado a esa estación, tasa por dispositivo y auditar
-  cada emisión (mismo criterio de auditoría que ADR-0011).
-- `TlsMaterialPort` obliga a refactorizar `live_view_lan` y `browser_local` para no leer rutas de
-  config directamente; el modo `file` mantiene la compatibilidad y las pruebas actuales.
-- Coste operativo: alguien opera el servicio y la CA. Hasta que exista, el modo `file` es el único
+  cada emisión (criterio de ADR-0011). La clave de la CA vive solo en el servidor de IT.
+- `TlsMaterialPort` obliga a refactorizar `live_view_lan` para no leer rutas de config directamente;
+  el modo `file` mantiene la compatibilidad y las pruebas actuales.
+- Coste operativo: IT opera el servicio y la CA local. Hasta que exista, el modo `file` es el único
   usable y este ADR no cambia el despliegue actual.
 
 ## Opciones no elegidas
@@ -74,22 +87,29 @@ certificado loopback. Hoy el material lo produce a mano `the-watcher-certs`
 - **Daemon con acceso a la CA**: la clave de CA en cada estación de Operator es inaceptable.
 - **Supabase Edge Function como CA**: mezcla el plano de identidad de Daily con firma de CA y
   dificulta auditar y aislar la clave.
-- **Mantener el certificado solo en el instalador**: es lo que hay hoy; no resuelve rotación ni
-  revocación.
+- **Mantener el certificado por estación dentro del instalador**: es lo que hay hoy; obliga a
+  construir un instalador por equipo en cada reformateo.
+- **Certificados de vida corta con renovación automática**: descartado; con reformateos cada ~3
+  meses la renovación no aporta y añade un bucle y modos de fallo al daemon.
 
-## Preguntas abiertas (bloquean pasar de Propuesto a Aceptado)
+## Preguntas resueltas (2026-10-02)
 
-1. ¿Qué CA corporativa firma en producción (ADCS, step-ca u otra) y quién opera el servicio?
-2. ¿Vida del certificado y ventana de renovación definitivas? (30 d / 2/3 es un punto de partida.)
-3. ¿Cómo se revoca? ¿Vida corta basta o hace falta CRL/OCSP para los navegadores del Supervisor?
-4. ¿`browser_local` (loopback) entra en el mismo servicio o conserva su emisión local? Su certificado
-   es de otra naturaleza (`localhost`, un solo usuario).
+1. **CA y operación**: CA local intra-LAN, sin CA certificada ni corporativa; opera solo IT.
+2. **Vida del certificado**: permanente en la práctica, sin renovación; un reformateo (~3 meses)
+   reinstala y re-emite.
+3. **Revocación**: basta la vida de la instalación; ver Consecuencias para el riesgo residual.
+4. **`browser_local`**: sigue emitiéndose localmente.
+
+## Pendiente para la fase 2
+
+- Implementación de la CA local (mkcert-compatible, step-ca o propia) y dónde se protege su clave.
+- Validez exacta del `notAfter` (10 años es el punto de partida).
 
 ## Plan por fases (cada una entregable y reversible)
 
 1. Introducir `TlsMaterialPort` + adaptador `file`; migrar `live_view_lan`/`browser_local`; sin cambio
    de comportamiento.
 2. Esbozo del servicio y esquema OpenAPI en `the-watcher-certs`, con la CA de prueba (mkcert).
-3. Adaptador `remote` con CSR, renovación y pruebas de falla cerrada (vencido, servicio caído, SAN
-   inválido).
-4. Piloto en una estación; después decidir sobre la CA de producción.
+3. Adaptador `remote` con CSR, emisión única y pruebas de falla cerrada (servicio caído, SAN
+   inválido, dispositivo no enrolado).
+4. Piloto en una estación; después decidir la implementación de la CA local de IT.
