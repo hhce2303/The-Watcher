@@ -85,7 +85,7 @@ jobs:
           # continue; the resulting installer imports the public root for its
           # actual Operator user during setup.
           $mkcertInstall = Start-Process -FilePath 'mkcert.exe' -ArgumentList '-install' -PassThru
-          if (-not $mkcertInstall.WaitForExit(45)) {
+          if (-not $mkcertInstall.WaitForExit(45000)) {
             if (-not (Test-Path -LiteralPath (Join-Path $env:CAROOT 'rootCA.pem') -PathType Leaf)) {
               Stop-Process -Id $mkcertInstall.Id -Force
               throw 'mkcert did not generate rootCA.pem before its runner trust installation timed out.'
