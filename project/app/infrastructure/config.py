@@ -257,6 +257,9 @@ class Settings:
     live_view_parent_origin: str = os.getenv(
         "LIVE_VIEW_PARENT_ORIGIN", "https://daily.sig.systems"
     ).rstrip("/")
+    # ADR-0023: "file" reads the *_FILE paths below; "remote" (not yet implemented)
+    # will enrol against the external TLS provisioning service.
+    tls_provisioning_mode: str = os.getenv("TLS_PROVISIONING_MODE", "file").lower()
     live_view_cert_file: str = _resolve_file("LIVE_VIEW_CERT_FILE")
     live_view_key_file: str = _resolve_file("LIVE_VIEW_KEY_FILE")
     live_view_issuer: str = os.getenv("LIVE_VIEW_ISSUER", "daily.sig.systems")

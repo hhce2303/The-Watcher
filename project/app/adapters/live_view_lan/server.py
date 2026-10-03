@@ -25,6 +25,7 @@ from app.adapters.live_view_lan.h264_feed import (
     default_candidates, parse_resolution,
 )
 from app.core.ports.live_view_port import LiveViewPort
+from app.core.ports.tls_material_port import TlsMaterialPort
 
 _MAX_WS_MESSAGE = 16 * 1024
 _BOUNDARY = b"watcher-live-frame"
@@ -57,9 +58,10 @@ class _FrameGate:
 class LiveViewLanAdapter(LiveViewPort):
     """Operator-only, token-gated viewer server; media never crosses IPC/JSON."""
 
-    def __init__(self, settings, api_layer) -> None:
+    def __init__(self, settings, api_layer, tls: TlsMaterialPort) -> None:
         self._settings = settings
         self._api = api_layer
+        self._tls = tls
         self._identity = DeviceIdentityStore(settings.browser_local_data_dir).load_or_create()
         self._sessions = BrowserSessionManager(
             identity=self._identity,
@@ -120,8 +122,7 @@ class LiveViewLanAdapter(LiveViewPort):
             raise ValueError("LIVE_VIEW_PARENT_ORIGIN must use HTTPS")
         if self._settings.live_view_max_viewers < 1:
             raise ValueError("LIVE_VIEW_MAX_VIEWERS must be positive")
-        if not Path(self._settings.live_view_cert_file).is_file() or not Path(self._settings.live_view_key_file).is_file():
-            raise ValueError("LIVE_VIEW_CERT_FILE and LIVE_VIEW_KEY_FILE are required")
+        self._tls.ensure()  # raises TlsMaterialError -> start() fails closed
 
     def _run(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -149,7 +150,8 @@ class LiveViewLanAdapter(LiveViewPort):
         await self._runner.setup()
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.load_cert_chain(self._settings.live_view_cert_file, self._settings.live_view_key_file)
+        material = self._tls.ensure()
+        context.load_cert_chain(material.cert_file, material.key_file)
         await web.TCPSite(self._runner, self._settings.live_view_bind_host, self._settings.live_view_port, ssl_context=context).start()
         self._stop_event = asyncio.Event()
         self._running = True

@@ -23,8 +23,8 @@ certificado loopback. Hoy el material lo produce a mano `the-watcher-certs`
 
 ## Decisión
 
-1. **Nuevo puerto `TlsMaterialPort`** en `core/ports/`, con `ensure() -> TlsMaterial(cert_file,
-   key_file, ca_files, not_after)` y `renew_if_due()`. `live_view_lan` y `browser_local` piden el
+1. **Nuevo puerto `TlsMaterialPort`** en `core/ports/`, con un único `ensure() -> TlsMaterial(cert_file,
+   key_file, ca_files)` que lanza `TlsMaterialError` si no hay material (sin renovación: ver punto 3). `live_view_lan` y `browser_local` piden el
    material al puerto en vez de leer `config.*_cert_file` directamente. `core/` sigue sin conocer
    HTTP, archivos ni CAs.
 2. **Dos adaptadores intercambiables**, elegidos por `TLS_PROVISIONING_MODE`:
