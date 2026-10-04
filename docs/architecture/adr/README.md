@@ -7,7 +7,7 @@ la *supersede*.
 ## ADRs de este repo
 
 Numeración: 0001–0005 reservados para este repo (los 0001–0005 del monorepo, de editor/IA, no se copiaron);
-los siguientes ADRs nuevos usan **0024** en adelante, para no chocar con los heredados.
+los siguientes ADRs nuevos usan **0024** en adelante (el siguiente libre es **0026**), para no chocar con los heredados.
 
 | ADR | Título | Estado |
 |-----|--------|--------|
@@ -15,6 +15,7 @@ los siguientes ADRs nuevos usan **0024** en adelante, para no chocar con los her
 | [0002](ADR-0002-thin-composition-root-and-daemon-api.md) | Raíz de composición delgada y `DaemonApi` mínima | Aceptado |
 | [0003](ADR-0003-exclude-auto-event-service-and-preview-server.md) | `auto_event_service` y `preview_server` MJPEG quedan fuera del daemon | Aceptado |
 | [0024](ADR-0024-tls-issuance-governance.md) | Gobernanza de emisión TLS: step-ca tras broker, claves separadas, nonce duradero y piloto de 90 días (enmienda 0023) | Aceptado |
+| [0025](ADR-0025-persistent-pilot-ca-in-github-secret.md) | CA de piloto persistente, con restricción de nombres, en un secreto de GitHub | Aceptado |
 
 ## ADRs heredados del monorepo (IDs del monorepo, copiados tal cual)
 

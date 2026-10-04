@@ -1,10 +1,13 @@
 name: Build pilot installer (Windows)
 
 # This workflow produces a field installer from an explicit test-pilot profile.
-# It never receives a CA private key from the repository: mkcert creates an
-# ephemeral CA on the GitHub-hosted runner. The installer contains only the
-# station leaf key required by the file-mode pilot. The matching public root is
-# uploaded separately for the IT supervisor-trust step.
+# All pilot installers are signed by ONE persistent pilot CA (ADR-0025) so a
+# supervisor imports its public root once. The CA key lives only in the GitHub
+# secret WATCHER_PILOT_CA_KEY: it is never committed, never uploaded as an
+# artifact and is deleted from the runner at the end. The CA is name-constrained
+# (sig.com, localhost, 127.0.0.1, 192.168.0.0/16). The installer contains only the
+# station leaf key required by the file-mode pilot; the public root is uploaded
+# separately for the IT supervisor-trust step.
 on:
   workflow_dispatch:
     inputs:
@@ -59,8 +62,11 @@ jobs:
       - name: Verify source before packaging
         run: python -m pytest -q
 
-      - name: Generate ephemeral pilot profile
+      - name: Generate pilot profile
         shell: pwsh
+        env:
+          PILOT_CA_CERT: ${{ secrets.WATCHER_PILOT_CA_CERT }}
+          PILOT_CA_KEY: ${{ secrets.WATCHER_PILOT_CA_KEY }}
         run: |
           Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Stop'
@@ -77,24 +83,26 @@ jobs:
           $trustRoot = Join-Path $certRoot 'trust'
           New-Item -ItemType Directory -Force -Path $certRoot, $trustRoot, $releaseRoot | Out-Null
 
-          $env:CAROOT = Join-Path $provisioningRoot 'test-ca'
-          # GitHub-hosted Windows runners can hang while mkcert tries to add
-          # its temporary root to unavailable browser trust stores. We need
-          # the generated root for this pilot, not runner-local trust. Once
-          # rootCA.pem exists, stop that best-effort trust installation and
-          # continue; the resulting installer imports the public root for its
-          # actual Operator user during setup.
-          $mkcertInstall = Start-Process -FilePath 'mkcert.exe' -ArgumentList '-install' -PassThru
-          if (-not $mkcertInstall.WaitForExit(45000)) {
-            if (-not (Test-Path -LiteralPath (Join-Path $env:CAROOT 'rootCA.pem') -PathType Leaf)) {
-              Stop-Process -Id $mkcertInstall.Id -Force
-              throw 'mkcert did not generate rootCA.pem before its runner trust installation timed out.'
-            }
-            Stop-Process -Id $mkcertInstall.Id -Force
-            Write-Host 'Skipped runner-local mkcert trust installation after root generation.'
-          } elseif ($mkcertInstall.ExitCode -ne 0) {
-            throw "mkcert -install failed with exit code $($mkcertInstall.ExitCode)."
+          # Persistent pilot CA from repository secrets (ADR-0025). Fail closed:
+          # never mint a replacement CA silently, that would orphan every
+          # supervisor that already trusts the current one.
+          if (-not $env:PILOT_CA_CERT -or -not $env:PILOT_CA_KEY) {
+            throw 'Secrets WATCHER_PILOT_CA_CERT and WATCHER_PILOT_CA_KEY are required (see ADR-0025).'
           }
+          $env:CAROOT = Join-Path $provisioningRoot 'pilot-ca'
+          New-Item -ItemType Directory -Force -Path $env:CAROOT | Out-Null
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText((Join-Path $env:CAROOT 'rootCA.pem'), $env:PILOT_CA_CERT.Replace("`r`n", "`n"), $utf8)
+          [System.IO.File]::WriteAllText((Join-Path $env:CAROOT 'rootCA-key.pem'), $env:PILOT_CA_KEY.Replace("`r`n", "`n"), $utf8)
+          # The key must belong to the certificate, and the certificate must not be near expiry.
+          try {
+            $pair = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($env:PILOT_CA_CERT, $env:PILOT_CA_KEY)
+          } catch {
+            throw "Pilot CA key does not match the pilot CA certificate: $($_.Exception.Message)"
+          }
+          if ($pair.NotAfter -lt (Get-Date).AddDays(30)) { throw "Pilot CA expires $($pair.NotAfter.ToString('u')); rotate it (ADR-0025)." }
+          Write-Host "Pilot CA SHA-256 thumbprint: $($pair.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256))"
+          $pair.Dispose()
 
           $ipAddresses = @($env:IP_ADDRESSES -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
           foreach ($address in $ipAddresses) {
@@ -114,7 +122,7 @@ jobs:
           [System.IO.File]::WriteAllText($issuerPath, ($issuerResponse.public_jwk | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
 
           $rootCertificate = Join-Path $env:CAROOT 'rootCA.pem'
-          if (-not (Test-Path -LiteralPath $rootCertificate -PathType Leaf)) { throw 'mkcert did not generate rootCA.pem.' }
+          if (-not (Test-Path -LiteralPath $rootCertificate -PathType Leaf)) { throw 'Pilot CA rootCA.pem is missing.' }
           Copy-Item $rootCertificate (Join-Path $trustRoot 'watcher-pilot-rootCA.pem') -Force
           Copy-Item $rootCertificate (Join-Path $releaseRoot 'watcher-pilot-rootCA.pem') -Force
 
@@ -183,3 +191,10 @@ jobs:
           path: release/watcher-pilot-rootCA.pem
           if-no-files-found: error
           retention-days: 7
+
+      - name: Remove pilot CA key from the runner
+        if: always()
+        shell: pwsh
+        run: |
+          $caKey = Join-Path $env:RUNNER_TEMP 'watcher-provisioning/pilot-ca/rootCA-key.pem'
+          if (Test-Path -LiteralPath $caKey) { Remove-Item -LiteralPath $caKey -Force }
