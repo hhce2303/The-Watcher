@@ -100,6 +100,14 @@ Source: "{#SourceDir}\*"; \
 Name: "{autoprograms}\{#AppName}"; \
     Filename: "{app}\{#AppExeName}"; \
     Comment: "The Watcher - Grabación automática de pantalla"
+Name: "{autoprograms}\Configurar firewall de {#AppName}"; \
+    Filename: "{app}\Configurar firewall.cmd"; \
+    WorkingDir: "{app}"; \
+    Comment: "Crea o corrige las reglas de firewall (pide administrador)"
+Name: "{autoprograms}\Datos de enrolamiento de {#AppName}"; \
+    Filename: "{app}\Datos de enrolamiento.cmd"; \
+    WorkingDir: "{app}"; \
+    Comment: "Muestra y copia los datos públicos para registrar la estación en Daily"
 
 ; ---------------------------------------------------------------------------
 [Registry]
@@ -185,10 +193,15 @@ begin
   // This is the only privileged operation.  ShellExec('runas') may ask for an
   // administrator credential, but the application itself has already been
   // installed in the original interactive user's LocalAppData directory.
-  if not ShellExec('runas', ExpandConstant('{sys}\netsh.exe'),
-    'advfirewall firewall add rule name=""The Watcher Live View"" dir=in action=allow protocol=TCP localport=8767 profile=private',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
-    MsgBox('The Watcher was installed for this user, but the LAN firewall rule was not added. Ask IT to allow TCP 8767 on the Private profile before using live supervision.', mbInformation, MB_OK);
+  // watcher-firewall.ps1 resolves the exe from its own folder ({app}), so an
+  // IT credential does not redirect it to another profile.  Exit code 2 means
+  // rules were created but a warning (Public network, Block rule) remains.
+  if not ShellExec('runas', 'powershell.exe',
+    '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\watcher-firewall.ps1') + '" -Quiet',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode = 1) then
+    MsgBox('The Watcher se instaló, pero no se crearon las reglas de firewall. Pida a IT ejecutar "Configurar firewall de The Watcher" desde el menú Inicio.', mbInformation, MB_OK)
+  else if ResultCode = 2 then
+    MsgBox('Reglas de firewall creadas, pero la red es Public o hay una regla que bloquea el puerto 8767. Ejecute "Configurar firewall de The Watcher" desde el menú Inicio para ver el detalle.', mbInformation, MB_OK);
 end;
 
 procedure TrustProvisionedCertificates();

@@ -274,6 +274,15 @@ if (Test-Path $SetupBat) {
     Write-Host "Copied Setup.bat to dist\The Watcher\"
 }
 
+# Firewall rules and Daily enrollment data: versioned scripts plus double-click
+# launchers, installed next to the exe so IT can re-run them without editing.
+foreach ($FieldFile in @(
+    "watcher-firewall.ps1", "Configurar firewall.cmd",
+    "watcher-enrollment.ps1", "Datos de enrolamiento.cmd")) {
+    Copy-Item -LiteralPath (Join-Path $ScriptDir $FieldFile) -Destination (Join-Path $DistDir $FieldFile) -Force
+    Write-Host "Copied $FieldFile to dist\The Watcher\"
+}
+
 # ---------------------------------------------------------------------------
 # Optional: copy to custom output directory
 # ---------------------------------------------------------------------------
