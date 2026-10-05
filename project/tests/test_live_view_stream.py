@@ -349,11 +349,12 @@ async def _ws_client(adapter) -> TestClient:
     return client
 
 
-async def _subscribed(client, subject: str, codec: str | None = None):
+async def _subscribed(client, subject: str, codec: str | None = None, monitors=None):
     ws = await client.ws_connect("/events", headers={"Origin": _ORIGIN})
     await ws.send_json({"type": "auth", "assertion": subject})
     assert (await ws.receive_json(timeout=2))["type"] == "authenticated"
-    await ws.send_json({"type": "subscribe", **({"codec": codec} if codec else {})})
+    extra = {**({"codec": codec} if codec else {}), **({"monitors": monitors} if monitors is not None else {})}
+    await ws.send_json({"type": "subscribe", **extra})
     return ws
 
 
@@ -387,6 +388,50 @@ def test_ws_pushes_every_monitor_once_over_one_connection(tmp_path, monkeypatch)
             await client.close()
 
     assert _run(scenario()) == {0: 1, 1: 1, 2: 1, 3: 1}, "one frame per monitor, none repeated while static"
+
+
+def test_ws_subscribe_with_monitors_sends_only_those_monitors(tmp_path, monkeypatch):
+    # The Daily supervisor opens one iframe per screen: each must receive only its monitor.
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live_server, "_KEEPALIVE_SECONDS", 60.0)
+    adapter, _ = _ws_adapter(tmp_path, monitors=(0, 1, 2, 3))
+
+    async def scenario():
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1", monitors=[2])
+            return await _binary_frames(ws, 0.5)
+        finally:
+            await client.close()
+
+    assert _run(scenario()) == {2: 1}
+
+
+def test_ws_invalid_monitor_filter_falls_back_to_every_monitor(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live_server, "_KEEPALIVE_SECONDS", 60.0)
+    adapter, _ = _ws_adapter(tmp_path, monitors=(0, 1))
+
+    async def scenario():
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1", monitors="2")
+            return await _binary_frames(ws, 0.5)
+        finally:
+            await client.close()
+
+    assert _run(scenario()) == {0: 1, 1: 1}
+
+
+def test_requested_monitors_parses_only_small_int_lists():
+    parse = live_server._requested_monitors
+    assert parse({"monitors": [1, 3]}) == {1, 3}
+    assert parse({}) is None
+    assert parse({"monitors": "1"}) is None
+    assert parse({"monitors": [True]}) is None
+    assert parse({"monitors": [256]}) is None
+    assert parse({"monitors": []}) is None
+    assert parse({"monitors": list(range(17))}) is None
 
 
 def test_ws_resends_only_the_monitor_that_changed(tmp_path, monkeypatch):
@@ -469,6 +514,13 @@ def test_ws_slot_is_freed_when_the_client_disconnects(tmp_path, monkeypatch):
     assert _run(scenario()) == {}
 
 
+def test_embed_js_supports_a_single_monitor_view():
+    js = live_server._JS
+    assert "URLSearchParams" in js and "get('monitor')" in js, "embed reads ?monitor=N"
+    assert "monitors:[want]" in js, "subscribe asks the daemon for that monitor only"
+    assert "single" in live_server._CSS, "single-monitor layout fills the iframe without a label"
+
+
 def test_embed_js_uses_one_websocket_not_one_stream_per_monitor():
     js = live_server._JS
     assert "subscribe" in js and "arraybuffer" in js and "createImageBitmap" in js
@@ -521,6 +573,27 @@ def test_ws_h264_sends_config_then_key_then_delta_and_no_jpeg(tmp_path, monkeypa
     assert cfg == ("json", {"type": "video_config", "monitor": 0, "codec": "avc1.4d401f"})
     assert key[:3] == ("bin", live_server.KIND_KEY, 0) and key[3].startswith(b"\x00\x00\x00\x01" + SPS)
     assert delta[:3] == ("bin", live_server.KIND_DELTA, 0)
+
+
+def test_ws_h264_with_monitors_only_encodes_those_monitors(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_server, "_FRAME_POLL_SECONDS", 0.01)
+    adapter, _ = _ws_adapter(tmp_path, monitors=(0, 1))
+    spawner = _Spawner(lambda p: (time.sleep(0.05), p.push(SPS, PPS, idr(), pframe(), AUD)))
+
+    async def scenario():
+        adapter._hub = H264Hub(asyncio.get_running_loop(), CFG, CANDIDATES, spawn=spawner, grace=0.05)
+        client = await _ws_client(adapter)
+        try:
+            ws = await _subscribed(client, "u1", codec="h264", monitors=[1])
+            got = await _collect(ws, 3)
+            return got, len(spawner.calls)
+        finally:
+            await client.close()
+
+    got, encodes = asyncio.run(scenario())
+    assert encodes == 1, "the unrequested monitor must not start an encode"
+    assert got[0] == ("json", {"type": "video_config", "monitor": 1, "codec": "avc1.4d401f"})
+    assert all(item[2] == 1 for item in got if item[0] == "bin"), "only monitor 1 may be streamed"
 
 
 def test_ws_falls_back_to_jpeg_when_no_encoder_works(tmp_path, monkeypatch):
